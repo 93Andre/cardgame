@@ -43,27 +43,45 @@ class SoundEngine {
     try { const v = parseFloat(localStorage.getItem('ph_vol') ?? '0.7'); return isNaN(v) ? 0.7 : v; } catch { return 0.7; }
   })();
 
+  private buildGraph(ctx: AudioContext) {
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -14;
+    comp.knee.value = 6;
+    comp.ratio.value = 12;
+    comp.attack.value = 0.003;
+    comp.release.value = 0.12;
+    const master = ctx.createGain();
+    master.gain.value = this.volume;
+    master.connect(comp);
+    comp.connect(ctx.destination);
+    this.compressor = comp;
+    this.master = master;
+    // statechange listener: aggressively resume on suspend, drop the ctx if it closes so
+    // the next ensure() recreates it from scratch.
+    ctx.addEventListener('statechange', () => {
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(() => { /* ignore */ });
+      } else if (ctx.state === 'closed') {
+        if (this.ctx === ctx) {
+          this.ctx = null;
+          this.master = null;
+          this.compressor = null;
+        }
+      }
+    });
+  }
+
   private ensure() {
+    // If a previous context got closed by the browser, drop the cached references so we recreate.
+    if (this.ctx && (this.ctx.state as string) === 'closed') {
+      this.ctx = null; this.master = null; this.compressor = null;
+    }
     if (!this.ctx) {
       const Ctor = (window as any).AudioContext || (window as any).webkitAudioContext;
       if (Ctor) {
         const ctx: AudioContext = new Ctor();
         this.ctx = ctx;
-        // Build a stable graph: each tone → master gain → compressor → destination.
-        // The compressor prevents clipping from overlapping tones (which sounds like sounds
-        // "cutting off"); the master gain holds the user's volume preference in one place.
-        const comp = ctx.createDynamicsCompressor();
-        comp.threshold.value = -14;
-        comp.knee.value = 6;
-        comp.ratio.value = 12;
-        comp.attack.value = 0.003;
-        comp.release.value = 0.12;
-        const master = ctx.createGain();
-        master.gain.value = this.volume;
-        master.connect(comp);
-        comp.connect(ctx.destination);
-        this.compressor = comp;
-        this.master = master;
+        this.buildGraph(ctx);
       }
     }
     if (this.ctx?.state === 'suspended') {
@@ -71,12 +89,20 @@ class SoundEngine {
     }
     if (!this.installedHandlers && typeof window !== 'undefined') {
       this.installedHandlers = true;
-      const resume = () => { if (this.ctx?.state === 'suspended') this.ctx.resume().catch(() => {}); };
+      const resume = () => {
+        // If suspended, resume. If closed, the next play() call's ensure() will recreate.
+        if (this.ctx?.state === 'suspended') this.ctx.resume().catch(() => {});
+      };
       document.addEventListener('visibilitychange', resume);
       window.addEventListener('focus', resume);
       window.addEventListener('pointerdown', resume);
       window.addEventListener('keydown', resume);
       window.addEventListener('touchstart', resume, { passive: true });
+      // Belt-and-suspenders: poll every 10s so a quietly-suspended context doesn't stay dead
+      // through the game just because the user wasn't generating "wakeful" events.
+      setInterval(() => {
+        if (this.ctx?.state === 'suspended') this.ctx.resume().catch(() => {});
+      }, 10000);
     }
     return this.ctx;
   }
