@@ -1653,19 +1653,44 @@ function FlipScreen({ state, dispatch, viewerId }: {
   const legal = canPlayCards([card], state.pile, state.sevenRestriction);
   const myAction = viewerId === null || (viewerId === state.current && !state.players[state.current]?.isAi);
   return (
-    <div className="h-full flex flex-col items-center justify-center gap-4">
-      <h2 className="text-2xl font-bold">Face-down flip — {state.players[state.current].name}</h2>
-      <motion.div initial={{ rotateY: 180, scale: 0.7 }} animate={{ rotateY: 0, scale: 1 }} transition={{ duration: 0.5 }}>
-        <CardFace card={card} />
+    <div className="fixed inset-0 z-20 flex items-center justify-center p-6 overflow-hidden">
+      <motion.div
+        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+        transition={{ duration: 0.25 }}
+        className="absolute inset-0 bg-stone-900/55 backdrop-blur-sm"
+      />
+      <motion.div
+        initial={{ clipPath: 'inset(50% 0 50% 0)', opacity: 0 }}
+        animate={{ clipPath: 'inset(0% 0 0% 0)', opacity: 1 }}
+        transition={{ duration: 0.55, ease: [0.16, 1, 0.3, 1] }}
+        className="relative w-full max-w-md rounded-3xl bg-stone-50 border-2 border-stone-300 shadow-2xl p-8 flex flex-col items-center gap-6"
+      >
+        <h2 className="text-2xl sm:text-3xl font-black text-center">
+          Face-down flip — <span className="text-amber-700">{state.players[state.current].name}</span>
+        </h2>
+        <motion.div
+          initial={{ rotateY: 180, scale: 0.4 }}
+          animate={{ rotateY: 0, scale: 1 }}
+          transition={{ type: 'spring', stiffness: 220, damping: 18, delay: 0.3 }}
+          className="scale-150 sm:scale-[1.8]"
+          style={{ transformOrigin: 'center' }}
+        >
+          <CardFace card={card} />
+        </motion.div>
+        <div className="text-base sm:text-lg font-semibold text-center mt-4">
+          {legal
+            ? <span className="text-emerald-700">✓ Legal — it will be played.</span>
+            : <span className="text-rose-700">✗ Not legal — {state.players[state.current].name} picks up the pile + this card.</span>
+          }
+        </div>
+        {myAction && (
+          <motion.button
+            initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.6 }}
+            onClick={() => dispatch({ type: 'RESOLVE_FLIP' })}
+            className="px-8 py-3 bg-amber-500 hover:bg-amber-400 active:scale-95 text-white font-bold rounded-xl shadow-lg text-base"
+          >Continue</motion.button>
+        )}
       </motion.div>
-      <div className="text-sm">
-        {legal ? <span className="text-emerald-700">Legal! It will be played.</span> : <span className="text-rose-700">Not legal — pile + this card go to {state.players[state.current].name}'s hand.</span>}
-      </div>
-      {myAction && (
-        <button onClick={() => dispatch({ type: 'RESOLVE_FLIP' })} className="px-6 py-2 bg-amber-500 text-white font-bold rounded">
-          Continue
-        </button>
-      )}
     </div>
   );
 }
@@ -1998,16 +2023,48 @@ function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; o
 /* ============== Sound + toast bindings ============== */
 
 function useEventEffects(log: string[], resetKey: any): { toasts: Toast[] } {
-  const lastLen = useRef(0);
+  // Track the last log line we processed by *content*, not by index. The reducer caps
+  // the log at 50 entries (oldest entries shift out as new ones append) — so length
+  // alone isn't a reliable cursor: once length plateaus at 50, slice(prevLength) is
+  // always empty even though new lines are appended every turn. lastIndexOf survives
+  // the rotation as long as the most recently seen line still exists in the cap.
+  const lastSeenLine = useRef<string | null>(null);
+  const initialized = useRef(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const idCounter = useRef(0);
   const haptic = useHaptics();
 
-  useEffect(() => { lastLen.current = 0; setToasts([]); }, [resetKey]);
+  useEffect(() => {
+    initialized.current = false;
+    lastSeenLine.current = null;
+    setToasts([]);
+  }, [resetKey]);
 
   useEffect(() => {
-    const newLines = log.slice(lastLen.current);
-    lastLen.current = log.length;
+    if (log.length === 0) return;
+    // First effect run for this game: don't replay every existing line — just record where
+    // we are and start diffing from here.
+    if (!initialized.current) {
+      initialized.current = true;
+      lastSeenLine.current = log[log.length - 1];
+      return;
+    }
+    let startIdx: number;
+    if (lastSeenLine.current === null) {
+      startIdx = 0;
+    } else {
+      const idx = log.lastIndexOf(lastSeenLine.current);
+      if (idx < 0) {
+        // The line we last saw has aged out of the cap entirely. Snap to the tail and
+        // skip this batch rather than replaying the whole log.
+        lastSeenLine.current = log[log.length - 1];
+        return;
+      }
+      startIdx = idx + 1;
+    }
+    const newLines = log.slice(startIdx);
+    if (newLines.length === 0) return;
+    lastSeenLine.current = newLines[newLines.length - 1];
     const adds: Toast[] = [];
     for (const line of newLines) {
       if (/Pile burned by 10/i.test(line)) { sfx.play('burn'); haptic('burn'); adds.push({ id: ++idCounter.current, text: '🔥 Pile burned!', tone: 'burn' }); }
