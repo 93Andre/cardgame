@@ -439,8 +439,14 @@ function CircularTable({ players, current, viewer, direction, renderPlayer, cent
       className="relative w-full mx-auto"
       style={{ aspectRatio, maxWidth: 900, minHeight }}
     >
-      <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full pointer-events-none">
-        <ellipse cx="50" cy="50" rx="42" ry="40" fill="none" stroke="rgba(120,120,120,0.18)" strokeDasharray="1.5 1.5" strokeWidth="0.4" />
+      <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full pointer-events-none overflow-visible">
+        {/* Dashed outline animates around the table in the current play direction. */}
+        <ellipse
+          cx="50" cy="50" rx="42" ry="40"
+          fill="none" stroke="rgba(120,120,120,0.35)" strokeWidth="0.5"
+          strokeDasharray="1.5 1.5"
+          className={direction === 1 ? 'table-flow-cw' : 'table-flow-ccw'}
+        />
       </svg>
 
       <div className="absolute left-1/2 top-1 -translate-x-1/2 text-xl text-gray-500 select-none pointer-events-none">
@@ -448,7 +454,9 @@ function CircularTable({ players, current, viewer, direction, renderPlayer, cent
       </div>
 
       {players.map(p => {
-        const slot = (((p.id - safeViewer) * direction + n * n) % n);
+        // Player slots are FIXED relative to the viewer — direction reversal only flips the
+        // animated outline below, so players never visually swap places mid-game.
+        const slot = (p.id - safeViewer + n) % n;
         const baseAngle = 90 + (slot / n) * 360;
         const angle = baseAngle * Math.PI / 180;
         const xPct = 50 + Math.cos(angle) * rx * 100;

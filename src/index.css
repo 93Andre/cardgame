@@ -2,6 +2,14 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Animated dashed table outline. The ellipse uses stroke-dasharray="1.5 1.5"
+ * (period 3 in user units), so shifting dashoffset by ±3 advances exactly one cycle —
+ * giving a clean infinite flow without visible seams. */
+@keyframes table-flow-cw  { to { stroke-dashoffset: -3; } }
+@keyframes table-flow-ccw { to { stroke-dashoffset:  3; } }
+.table-flow-cw  { animation: table-flow-cw  2.4s linear infinite; }
+.table-flow-ccw { animation: table-flow-ccw 2.4s linear infinite; }
+
 html, body, #root {
   height: 100%;
   margin: 0;
