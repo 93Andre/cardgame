@@ -448,6 +448,18 @@ wss.on('connection', ws => {
         return;
       }
 
+      case 'LIST_ROOMS': {
+        const list = [...rooms.values()].map(r => ({
+          code: r.code,
+          host: r.players[r.hostId]?.name ?? '?',
+          playerCount: r.players.length,
+          maxPlayers: MAX_PLAYERS,
+          started: r.state !== null,
+        }));
+        send(ws, { t: 'ROOMS', rooms: list });
+        return;
+      }
+
       case 'LEAVE': {
         const ref = socketToRoom.get(ws);
         if (!ref) return;

@@ -388,6 +388,18 @@ export default class GameServer implements Party.Server {
         return;
       }
 
+      case 'LIST_ROOMS': {
+        const list = [...this.rooms.values()].map(r => ({
+          code: r.code,
+          host: r.players[r.hostId]?.name ?? '?',
+          playerCount: r.players.length,
+          maxPlayers: MAX_PLAYERS,
+          started: r.state !== null,
+        }));
+        this.send(sender, { t: 'ROOMS', rooms: list });
+        return;
+      }
+
       case 'LEAVE': {
         const ref = senderState; if (!ref) return;
         const room = this.rooms.get(ref.code); if (!room) return;

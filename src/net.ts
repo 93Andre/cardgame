@@ -10,10 +10,19 @@ export interface LobbyView {
   emotes: { id: string; playerId: number; emoji: string; ts: number }[];
 }
 
+export interface PublicRoom {
+  code: string;
+  host: string;
+  playerCount: number;
+  maxPlayers: number;
+  started: boolean;
+}
+
 export type ServerMsg =
   | { t: 'LOBBY'; lobby: LobbyView }
   | { t: 'STATE'; state: GameState; lobby: LobbyView }
   | { t: 'SESSION'; code: string; id: number; token: string; spectator?: boolean }
+  | { t: 'ROOMS'; rooms: PublicRoom[] }
   | { t: 'ERR'; msg: string };
 
 export type ClientMsg =
@@ -21,6 +30,7 @@ export type ClientMsg =
   | { t: 'JOIN'; code: string; name: string }
   | { t: 'RESUME'; code: string; token: string }
   | { t: 'SPECTATE'; code: string }
+  | { t: 'LIST_ROOMS' }
   | { t: 'ADD_AI' }
   | { t: 'REMOVE_AI' }
   | { t: 'START' }
@@ -41,6 +51,7 @@ export interface NetworkConn {
   lobby: LobbyView | null;
   state: GameState | null;
   session: Session | null;
+  rooms: PublicRoom[];
   error: string | null;
   send: (msg: ClientMsg) => void;
   disconnect: () => void;
@@ -81,6 +92,7 @@ export function useNetwork(active: boolean): NetworkConn {
   const [lobby, setLobby] = useState<LobbyView | null>(null);
   const [state, setState] = useState<GameState | null>(null);
   const [session, setSession] = useState<Session | null>(null);
+  const [rooms, setRooms] = useState<PublicRoom[]>([]);
   const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -109,6 +121,8 @@ export function useNetwork(active: boolean): NetworkConn {
           const s: Session = { code: msg.code, id: msg.id, token: msg.token, spectator: !!msg.spectator };
           setSession(s);
           if (!s.spectator) saveSession(s);
+        } else if (msg.t === 'ROOMS') {
+          setRooms(msg.rooms);
         } else if (msg.t === 'ERR') {
           setError(msg.msg);
           // If we tried to resume into a stale session, clear it.
@@ -136,5 +150,5 @@ export function useNetwork(active: boolean): NetworkConn {
     setLobby(null); setState(null); setStatus('closed'); setError(null);
   };
   const clearError = () => setError(null);
-  return { status, lobby, state, session, error, send, disconnect, clearError };
+  return { status, lobby, state, session, rooms, error, send, disconnect, clearError };
 }

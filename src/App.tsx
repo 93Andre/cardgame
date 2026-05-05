@@ -1315,6 +1315,16 @@ function EndScreen({ state, onPlayAgain }: { state: GameState; onPlayAgain: () =
 function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; onLeave: () => void; prefilledCode?: string }) {
   const [name, setName] = useState('');
   const [code, setCode] = useState(prefilledCode?.toUpperCase() ?? '');
+  const [pendingCode, setPendingCode] = useState<string | null>(null);
+
+  // Poll the public room list every 5s while we're still in the lobby form.
+  useEffect(() => {
+    if (conn.status !== 'open' || conn.lobby) return;
+    conn.send({ t: 'LIST_ROOMS' });
+    const t = setInterval(() => conn.send({ t: 'LIST_ROOMS' }), 5000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conn.status, conn.lobby]);
 
   if (!conn.lobby) {
     const nameTrim = name.trim();
@@ -1326,6 +1336,72 @@ function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; o
         {conn.status === 'error' && <div className="text-rose-700 text-sm max-w-md text-center">{conn.error ?? 'Connection failed.'} Make sure the server is running.</div>}
         {conn.status === 'open' && (
           <div className="flex flex-col gap-3 w-80">
+            {/* Public room list */}
+            {conn.rooms.length > 0 && (
+              <div className="border border-gray-300 rounded bg-white/80">
+                <div className="px-3 py-2 text-xs font-semibold text-gray-700 border-b border-gray-200 flex items-center justify-between">
+                  <span>🟢 Live games ({conn.rooms.length})</span>
+                  <button
+                    onClick={() => conn.send({ t: 'LIST_ROOMS' })}
+                    className="text-gray-500 hover:text-gray-800" title="Refresh"
+                  >↻</button>
+                </div>
+                <ul className="max-h-48 overflow-y-auto divide-y divide-gray-100">
+                  {conn.rooms.map(r => {
+                    const selected = pendingCode === r.code;
+                    return (
+                      <li key={r.code}>
+                        <button
+                          onClick={() => setPendingCode(selected ? null : r.code)}
+                          className={`w-full px-3 py-2 text-left text-sm flex items-center justify-between ${selected ? 'bg-indigo-50' : 'hover:bg-gray-50'}`}
+                        >
+                          <span className="flex flex-col">
+                            <span className="font-semibold">{r.host}'s game</span>
+                            <span className="text-xs text-gray-500">
+                              {r.playerCount}/{r.maxPlayers} players · {r.started ? 'in progress' : 'lobby'}
+                            </span>
+                          </span>
+                          <span className={`text-xs ${r.started ? 'text-rose-600' : 'text-emerald-600'}`}>
+                            {r.started ? 'spectate' : 'join'}
+                          </span>
+                        </button>
+                        {selected && (
+                          <div className="px-3 pb-3 pt-1 bg-indigo-50/60 flex flex-col gap-2">
+                            <div className="text-xs text-gray-700">Enter the room code to {r.started ? 'spectate' : 'join'} {r.host}'s game:</div>
+                            <input
+                              autoFocus
+                              value={code}
+                              onChange={e => setCode(e.target.value.toUpperCase())}
+                              placeholder="Room code"
+                              maxLength={4}
+                              className="px-2 py-1 border border-gray-300 rounded uppercase tracking-widest text-center text-sm"
+                            />
+                            {!r.started && (
+                              <button
+                                disabled={!nameTrim || codeTrim !== r.code}
+                                onClick={() => conn.send({ t: 'JOIN', code: codeTrim, name: nameTrim })}
+                                className={`px-3 py-1.5 rounded text-sm font-semibold ${nameTrim && codeTrim === r.code ? 'bg-indigo-500 hover:bg-indigo-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
+                              >Join {r.host}'s game</button>
+                            )}
+                            {r.started && (
+                              <button
+                                disabled={codeTrim !== r.code}
+                                onClick={() => conn.send({ t: 'SPECTATE', code: codeTrim })}
+                                className={`px-3 py-1.5 rounded text-sm font-semibold ${codeTrim === r.code ? 'bg-gray-700 hover:bg-gray-800 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
+                              >Spectate</button>
+                            )}
+                            {codeTrim.length > 0 && codeTrim !== r.code && (
+                              <div className="text-xs text-rose-700">Code doesn't match.</div>
+                            )}
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+
             <input value={name} onChange={e => setName(e.target.value)} placeholder="Your name"
               className="px-3 py-2 border border-gray-300 rounded" />
             <button
