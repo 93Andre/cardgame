@@ -170,6 +170,18 @@ export function cardsFromSource(p: Player, src: Source): Card[] {
   return src === 'hand' ? p.hand : src === 'faceUp' ? p.faceUp : p.faceDown;
 }
 
+// Counts how many cards on top of the pile share `rank` consecutively (actual rank,
+// jokers don't count even when their effective rank matches). Used for the 4-of-a-kind
+// cap so a player can't over-stack a rank past the burn threshold.
+export function topRunOfRank(pile: PileEntry[], rank: Rank): number {
+  let count = 0;
+  for (let i = pile.length - 1; i >= 0; i--) {
+    if (pile[i].card.rank === rank) count++;
+    else break;
+  }
+  return count;
+}
+
 export function canPlayCards(cards: Card[], pile: PileEntry[], sevenLock: boolean): boolean {
   if (cards.length === 0) return false;
   // House rule: jokers are no longer wild within a multi-card play. All cards in the
@@ -181,6 +193,10 @@ export function canPlayCards(cards: Card[], pile: PileEntry[], sevenLock: boolea
   const top = topEffRank(pile);
   // 2/10/Joker are always playable (exempt from both ≥-top and 7-lock rules).
   if (baseRank === '2' || baseRank === '10' || baseRank === 'JK') return true;
+  // 4-of-a-kind cap: the new play plus any existing same-rank run on top can't exceed 4.
+  // Forces players to use only as many as the burn needs, never more.
+  const topRun = topRunOfRank(pile, baseRank);
+  if (cards.length + topRun > 4) return false;
   if (top === null) return true;
   if (sevenLock) return RANK_VALUE[baseRank] <= 7;
   return RANK_VALUE[baseRank] >= RANK_VALUE[top];
@@ -562,6 +578,13 @@ export function reducer(state: GameState, action: Action): GameState {
       // House rule: jokers can only be selected with other jokers, not with any other rank.
       const ranks = new Set(allCards.map(c => c.rank));
       if (ranks.size > 1) return state;
+      // 4-of-a-kind cap (UI side): refuse to add a card that would push the consecutive
+      // top-of-pile run past 4. So you can't queue a 4th 9 if the pile already has one.
+      const baseRank = [...ranks][0] as Rank;
+      if (baseRank !== '2' && baseRank !== '10' && baseRank !== 'JK') {
+        const topRun = topRunOfRank(state.pile, baseRank);
+        if (allCards.length + topRun > 4) return state;
+      }
       return { ...state, selected: [...state.selected, action.id] };
     }
 

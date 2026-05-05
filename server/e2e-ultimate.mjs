@@ -304,6 +304,50 @@ check('four real jokers burn (rank=JK each)', () => {
   assert.equal(isFourOfAKind(four), true);
 });
 
+// 4-of-a-kind cap: can't stack more of a rank than would complete the burn.
+console.log('\n[4-of-a-kind cap]\n');
+const oneNine = [{ card: { id: '9♥', rank: '9', suit: '♥' }, effRank: '9', effSuit: '♥' }];
+const twoNines = [
+  { card: { id: '9♥', rank: '9', suit: '♥' }, effRank: '9', effSuit: '♥' },
+  { card: { id: '9♣', rank: '9', suit: '♣' }, effRank: '9', effSuit: '♣' },
+];
+const oneJokerOverNine = [
+  { card: { id: '9♥', rank: '9', suit: '♥' }, effRank: '9', effSuit: '♥' },
+  { card: { id: 'JK1', rank: 'JK', suit: '★' }, effRank: '9', effSuit: '♥' },
+];
+check('can play 3 nines on one nine (caps at 4 total)', () => {
+  const cards = ['9♣', '9♦', '9♠'].map(id => ({ id, rank: '9', suit: id.slice(-1) }));
+  assert.equal(canPlayCards(cards, oneNine, false), true);
+});
+check('cannot play 4 nines on one nine (would total 5)', () => {
+  const cards = ['9♣', '9♦', '9♠', '9♣·d2'].map((id, i) => ({ id, rank: '9', suit: ['♣','♦','♠','♣'][i] }));
+  assert.equal(canPlayCards(cards, oneNine, false), false);
+});
+check('can play 2 nines on two nines (totals 4)', () => {
+  const cards = ['9♦', '9♠'].map(id => ({ id, rank: '9', suit: id.slice(-1) }));
+  assert.equal(canPlayCards(cards, twoNines, false), true);
+});
+check('cannot play 3 nines on two nines (would total 5)', () => {
+  const cards = ['9♦', '9♠', '9♣·d2'].map((id, i) => ({ id, rank: '9', suit: ['♦','♠','♣'][i] }));
+  assert.equal(canPlayCards(cards, twoNines, false), false);
+});
+check('joker on top of 9 does NOT count toward the cap run', () => {
+  // Pile: 9 + Joker(=9). Player has three 9s. Should still be allowed (the joker
+  // doesn't count, so only one 9 is in the run).
+  const cards = ['9♣', '9♦', '9♠'].map(id => ({ id, rank: '9', suit: id.slice(-1) }));
+  assert.equal(canPlayCards(cards, oneJokerOverNine, false), true);
+});
+check('cap does not apply to jokers themselves', () => {
+  // Stacking 5 jokers in a row is fine — they don't burn unless 4 actual JKs in a row,
+  // which already happens; jokers are special and exempt from the cap.
+  const cards = Array.from({ length: 5 }).map((_, i) => ({ id: `JK${i}`, rank: 'JK', suit: '★' }));
+  assert.equal(canPlayCards(cards, [], false), true);
+});
+check('cap does not apply to 2s or 10s (specials)', () => {
+  const fives = Array.from({ length: 5 }).map((_, i) => ({ id: `2-${i}`, rank: '2', suit: '♣' }));
+  assert.equal(canPlayCards(fives, [], false), true);
+});
+
 // 8. WebSocket: CUT message validates sender == action.player.
 console.log('\n[WebSocket CUT validation]\n');
 async function wsTest() {
