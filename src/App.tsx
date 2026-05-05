@@ -485,14 +485,10 @@ function CircularTable({ players, current, viewer, direction, renderPlayer, cent
 
 /* ============== Center piles ============== */
 
-// Stacked card layers visualizing depth. Top card is rendered DOMINANTLY at the front;
-// depth layers peek out behind it (down-right). For the pile, layerCards renders the
-// real previously-played cards face-up underneath. For the deck, no layerCards is given
-// so card-back rectangles show (because the deck IS face-down).
 function CardStack({ count, top, layerCards, emptyLabel, tone = 'normal' }: {
   count: number;
   top?: React.ReactNode;
-  layerCards?: PileEntry[];     // when provided, each layer renders the actual face-up card from this list
+  layerCards?: PileEntry[];
   emptyLabel?: string;
   tone?: 'normal' | 'burned';
 }) {
@@ -514,7 +510,7 @@ function CardStack({ count, top, layerCards, emptyLabel, tone = 'normal' }: {
         const offset = depth * layerStep;
         const layerCardEntry = layerCards ? layerCards[layerCards.length - depth] : undefined;
         const fallbackCls = tone === 'burned'
-          ? 'border-rose-400/60 bg-gradient-to-b from-amber-100 to-rose-300'
+          ? 'border-rose-600/60 bg-rose-500'
           : 'border-indigo-800/60 bg-indigo-700';
         return (
           <div
@@ -623,38 +619,26 @@ function CenterPiles({ deckCount, pile, burnedCount, lastBurnSize }: {
           count={burnedCount}
           tone="burned"
           top={
-            <div className="relative w-full h-full rounded-md border-2 border-dashed border-rose-400 bg-gradient-to-b from-amber-100 to-rose-200 flex flex-col items-center justify-center overflow-hidden">
-              <div className="text-2xl">🔥</div>
-              <div className="text-xs font-bold text-rose-800">{burnedCount}</div>
+            <div className="relative w-14 h-20 sm:w-16 sm:h-24 rounded-md border border-rose-700 bg-rose-500 shadow-sm flex items-center justify-center text-white">
+              <span className="font-black tracking-widest opacity-70 text-xs sm:text-sm">×</span>
             </div>
           }
-          emptyLabel="🔥 0"
+          emptyLabel="empty"
         />
-        {/* Burst + embers anchored to the stack region */}
-        <div className="absolute inset-0 pointer-events-none flex items-start justify-center">
-          <AnimatePresence>
-            {lastBurnSize > 0 && (
-              <motion.div
-                key={`burst-${burnedCount}`}
-                initial={{ opacity: 0, scale: 0.5 }}
-                animate={{ opacity: [0, 1, 0], scale: [0.5, 1.6, 1.8] }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 1.2 }}
-                className="text-3xl mt-4"
-              >🔥</motion.div>
-            )}
-          </AnimatePresence>
-          {lastBurnSize > 0 && Array.from({ length: Math.min(lastBurnSize, 8) }).map((_, i) => (
+        {/* A single soft rose ring expands briefly on each burn — replaces the old fire+embers fanfare. */}
+        <AnimatePresence>
+          {lastBurnSize > 0 && (
             <motion.div
-              key={`ember-${burnedCount}-${i}`}
-              initial={{ y: 30, x: (Math.random() - 0.5) * 30, opacity: 1, scale: 0.6 }}
-              animate={{ y: -60, opacity: 0, scale: 1.2 }}
-              transition={{ duration: 1.4 + Math.random() * 0.6, delay: i * 0.05 }}
-              className="absolute left-1/2 bottom-2 -translate-x-1/2 text-base pointer-events-none"
-            >✨</motion.div>
-          ))}
-        </div>
-        <span className="text-xs text-rose-700 font-semibold">burned: {burnedCount}</span>
+              key={`burn-flash-${burnedCount}`}
+              initial={{ opacity: 0.7, scale: 0.7 }}
+              animate={{ opacity: 0, scale: 1.6 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.8, ease: 'easeOut' }}
+              className="absolute top-0 w-14 h-20 sm:w-16 sm:h-24 rounded-md border-2 border-rose-500 pointer-events-none"
+            />
+          )}
+        </AnimatePresence>
+        <span className="text-xs text-gray-600">burned: {burnedCount}</span>
       </div>
     </div>
   );
@@ -1373,7 +1357,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
             );
           })()}
 
-          <div className="border-t pt-3">
+          <div className="border-t pt-3 mx-auto w-full max-w-3xl">
             <div className="flex items-center justify-between mb-2">
               <div className="text-xs sm:text-sm text-gray-600">
                 {isSpectator && <>Spectating — {state.players[state.current]?.name}'s turn</>}
@@ -1389,7 +1373,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
             </div>
             {/* Face-down phase: render the player's face-down cards here as the primary interaction surface. */}
             {isMyTurn && src === 'faceDown' && me && (
-              <div className="flex gap-3 flex-wrap items-center">
+              <div className="flex gap-3 flex-wrap items-center justify-center">
                 {me.faceDown.map(c => (
                   <motion.div
                     key={c.id}
@@ -1403,7 +1387,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
               </div>
             )}
             {src && src !== 'faceDown' && (
-              <div className="flex gap-2 flex-wrap">
+              <div className="flex gap-2 flex-wrap justify-center">
                 <LayoutGroup>
                   {displayCards.map(c => {
                     const wouldBeOk = isMyTurn ? canPlayCards([c], state.pile, state.sevenRestriction) : true;
@@ -1420,7 +1404,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
                 </LayoutGroup>
               </div>
             )}
-            <div className="mt-3 flex gap-2 items-center flex-wrap">
+            <div className="mt-3 flex gap-2 items-center flex-wrap justify-center">
               <button
                 disabled={!canPlay}
                 onClick={() => dispatch({ type: 'PLAY_SELECTED' })}
