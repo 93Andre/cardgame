@@ -56,8 +56,20 @@ class SoundEngine {
     comp.connect(ctx.destination);
     this.compressor = comp;
     this.master = master;
-    // statechange listener: aggressively resume on suspend, drop the ctx if it closes so
-    // the next ensure() recreates it from scratch.
+
+    // Silent keep-alive oscillator. Browsers (especially iOS Safari and Chrome on Android)
+    // suspend AudioContexts that are silent for too long — that's why sound was cutting out
+    // during long AI-only sequences. A near-DC oscillator at gain 0 keeps the audio engine
+    // running with zero audible output and zero CPU impact.
+    try {
+      const keepAliveOsc = ctx.createOscillator();
+      const keepAliveGain = ctx.createGain();
+      keepAliveGain.gain.value = 0;
+      keepAliveOsc.frequency.value = 1;
+      keepAliveOsc.connect(keepAliveGain).connect(ctx.destination);
+      keepAliveOsc.start();
+    } catch { /* ignore — graph still works */ }
+
     ctx.addEventListener('statechange', () => {
       if (ctx.state === 'suspended') {
         ctx.resume().catch(() => { /* ignore */ });
@@ -1473,12 +1485,11 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
             )}
           </div>
 
-          {/* Action bar — sticky at the bottom so the primary actions are always thumb-reachable
-              and never hidden behind a scrolled hand strip. Only renders when the viewer can
-              actually act (their turn) so it doesn't clutter the layout when watching. */}
-          {(isMyTurn || canCut) && (
+          {/* Action bar — sticky at the bottom. Hidden during the face-down phase so it doesn't
+              cover the blind-flip cards (both buttons would be disabled anyway). */}
+          {(isMyTurn || canCut) && src !== 'faceDown' && (
             <div className="sticky bottom-0 left-0 right-0 z-20 mt-2 pb-3 pt-2 px-3 -mx-3 sm:-mx-4 flex items-center gap-2 flex-wrap justify-center bg-gradient-to-t from-emerald-950/80 via-emerald-900/40 to-transparent">
-              {isMyTurn && !anyLegal && src && src !== 'faceDown' && (
+              {isMyTurn && !anyLegal && src && (
                 <span className="text-xs text-rose-200 italic mr-1">No legal play — pick up.</span>
               )}
               <button
@@ -1489,9 +1500,9 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
                 <span className="text-lg">▶</span> Play
               </button>
               <button
-                disabled={!isMyTurn || state.pile.length === 0 || src === 'faceDown'}
+                disabled={!isMyTurn || state.pile.length === 0}
                 onClick={() => dispatch({ type: 'PICKUP_PILE' })}
-                className={`px-5 py-2.5 sm:px-6 sm:py-3 rounded-xl text-sm sm:text-base font-bold flex items-center gap-2 shadow-lg transition-all ${isMyTurn && state.pile.length > 0 && src !== 'faceDown' ? 'bg-rose-500 hover:bg-rose-400 active:scale-95 text-white' : 'bg-stone-700/70 text-stone-400 cursor-not-allowed'}`}
+                className={`px-5 py-2.5 sm:px-6 sm:py-3 rounded-xl text-sm sm:text-base font-bold flex items-center gap-2 shadow-lg transition-all ${isMyTurn && state.pile.length > 0 ? 'bg-rose-500 hover:bg-rose-400 active:scale-95 text-white' : 'bg-stone-700/70 text-stone-400 cursor-not-allowed'}`}
               >
                 <span className="text-lg">⤴</span> Pick up
               </button>
