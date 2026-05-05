@@ -1467,12 +1467,35 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
 }
 
 function EmoteBar({ onEmote }: { onEmote: (e: string) => void }) {
+  const [open, setOpen] = useState(false);
   const emotes = ['👍', '😂', '💩', '🔥', '😱'];
   return (
-    <div className="fixed bottom-3 left-1/2 -translate-x-1/2 flex gap-1 bg-white/80 border border-gray-300 rounded-full px-2 py-1 shadow z-30">
-      {emotes.map(e => (
-        <button key={e} onClick={() => onEmote(e)} className="text-xl hover:scale-125 transition-transform px-1" aria-label={`emote ${e}`}>{e}</button>
-      ))}
+    <div className="fixed bottom-3 right-3 z-30">
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: 12, scale: 0.85 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 12, scale: 0.85 }}
+            transition={{ duration: 0.18, ease: 'easeOut' }}
+            className="absolute bottom-12 right-0 flex gap-1 bg-white/90 border border-gray-300 rounded-full px-2 py-1 shadow-lg"
+          >
+            {emotes.map(e => (
+              <button
+                key={e}
+                onClick={() => { onEmote(e); setOpen(false); }}
+                className="text-xl hover:scale-125 transition-transform px-1 leading-none"
+                aria-label={`emote ${e}`}
+              >{e}</button>
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
+      <button
+        onClick={() => setOpen(o => !o)}
+        title="Send an emote"
+        className="w-10 h-10 rounded-full bg-white/80 border border-gray-300 shadow text-xl hover:bg-white flex items-center justify-center"
+      >{open ? '×' : '😀'}</button>
     </div>
   );
 }
