@@ -373,10 +373,13 @@ export default class GameServer implements Party.Server {
         if (ref.id !== room.hostId) return this.err(sender, 'Only host can start');
         if (room.players.length < MIN_PLAYERS) return this.err(sender, `Need at least ${MIN_PLAYERS} players`);
         if (room.state) return this.err(sender, 'Already started');
+        const aiDifficulty = msg.aiDifficulty === 'easy' || msg.aiDifficulty === 'hard' ? msg.aiDifficulty : 'normal';
         room.state = newGame(
           room.players.length,
           room.players.map(p => p.name),
           room.players.map(p => p.isAi),
+          undefined,
+          aiDifficulty,
         );
         this.broadcast(room);
         this.persist();
@@ -414,6 +417,8 @@ export default class GameServer implements Party.Server {
           room.players.length,
           room.players.map(p => p.name),
           room.players.map(p => p.isAi),
+          undefined,
+          room.state.aiDifficulty,
         );
         room.emotes = [];
         this.broadcast(room);

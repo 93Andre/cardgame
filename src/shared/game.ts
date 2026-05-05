@@ -38,6 +38,7 @@ export interface Player {
 export type Phase = 'setup' | 'swap' | 'pass' | 'play' | 'flipFaceDown' | 'reveal' | 'end';
 export type Source = 'hand' | 'faceUp' | 'faceDown';
 export type GameMode = 'classic' | 'ultimate';
+export type AiDifficulty = 'easy' | 'normal' | 'hard';
 
 export interface GameState {
   phase: Phase;
@@ -63,6 +64,7 @@ export interface GameState {
   pendingReveal: { cards: Card[] } | null;
   revealedPickup: { playerId: number; card: Card; ts: number } | null;
   stats: Record<number, PlayerStats>;
+  aiDifficulty: AiDifficulty;
 }
 
 export interface PlayerStats {
@@ -74,7 +76,7 @@ export interface PlayerStats {
 }
 
 export type Action =
-  | { type: 'NEW_GAME'; playerCount?: number; names?: string[]; aiSeats?: boolean[]; mode?: GameMode }
+  | { type: 'NEW_GAME'; playerCount?: number; names?: string[]; aiSeats?: boolean[]; mode?: GameMode; aiDifficulty?: AiDifficulty }
   | { type: 'SWAP_PICK'; player: number; source: Source; id: string }
   | { type: 'SWAP_READY'; player: number }
   | { type: 'BEGIN_PLAY' }
@@ -252,6 +254,7 @@ export function initialState(): GameState {
     pendingReveal: null,
     revealedPickup: null,
     stats: {},
+    aiDifficulty: 'normal',
   };
 }
 
@@ -264,7 +267,7 @@ function bumpStats(state: GameState, playerId: number, patch: Partial<PlayerStat
   return { ...state.stats, [playerId]: { ...cur, ...Object.fromEntries(Object.entries(patch).map(([k, v]) => [k, (cur as any)[k] + (v as number)])) as Partial<PlayerStats> } };
 }
 
-export function newGame(playerCount: number = DEFAULT_PLAYER_COUNT, names?: string[], aiSeats?: boolean[], mode?: GameMode): GameState {
+export function newGame(playerCount: number = DEFAULT_PLAYER_COUNT, names?: string[], aiSeats?: boolean[], mode?: GameMode, aiDifficulty: AiDifficulty = 'normal'): GameState {
   // Auto-activate Ultimate at 4+ players unless caller forces classic.
   const resolvedMode: GameMode = mode ?? (playerCount >= 4 ? 'ultimate' : 'classic');
   const useTwoDecks = resolvedMode === 'ultimate';
@@ -285,6 +288,7 @@ export function newGame(playerCount: number = DEFAULT_PLAYER_COUNT, names?: stri
     swapSelected,
     mode: resolvedMode,
     stats,
+    aiDifficulty,
     log: [intro],
   };
 }
@@ -470,7 +474,7 @@ function postPlay(stateIn: GameState, playerIdx: number, sourceUsed: Source, pla
 export function reducer(state: GameState, action: Action): GameState {
   switch (action.type) {
     case 'NEW_GAME':
-      return newGame(action.playerCount ?? DEFAULT_PLAYER_COUNT, action.names, action.aiSeats, action.mode);
+      return newGame(action.playerCount ?? DEFAULT_PLAYER_COUNT, action.names, action.aiSeats, action.mode, action.aiDifficulty);
 
     case 'SWAP_PICK': {
       const { player, source, id } = action;
@@ -765,7 +769,6 @@ export function aiPickAction(state: GameState, aiId: number): Action | null {
     return null;
   }
   if (state.phase === 'play' && state.current === aiId) {
-    // On its own turn, AI may also cut (rare — would only matter if its top-card was just played by someone else).
     if (state.mode === 'ultimate') {
       const matches = cutMatches(state, aiId);
       if (matches.length > 0) return { type: 'CUT', player: aiId, ids: matches.map(c => c.id) };
@@ -777,25 +780,93 @@ export function aiPickAction(state: GameState, aiId: number): Action | null {
       const card = p.faceDown[Math.floor(Math.random() * p.faceDown.length)];
       return { type: 'FLIP_FACEDOWN', id: card.id };
     }
-    const cards = cardsFromSource(p, src);
-    const legal = cards.filter(c => canPlayCards([c], state.pile, state.sevenRestriction));
-    if (legal.length === 0) return { type: 'PICKUP_PILE' };
-    // Group legal cards by rank, prefer non-special, then lowest rank value.
-    const byRank = new Map<Rank, Card[]>();
-    for (const c of legal) {
-      const arr = byRank.get(c.rank) ?? [];
-      arr.push(c);
-      byRank.set(c.rank, arr);
+    switch (state.aiDifficulty) {
+      case 'easy': return aiPlayEasy(state, p, src);
+      case 'hard': return aiPlayHard(state, p, src);
+      default:     return aiPlayNormal(state, p, src);
     }
-    const ranks = [...byRank.keys()].sort((a, b) => {
-      const sa = SPECIAL_RANKS.has(a), sb = SPECIAL_RANKS.has(b);
-      if (sa !== sb) return sa ? 1 : -1;
-      return RANK_VALUE[a] - RANK_VALUE[b];
-    });
-    const chosen = byRank.get(ranks[0])!;
-    return { type: 'PLAY_CARDS', ids: chosen.map(c => c.id) };
   }
   return null;
+}
+
+function legalGroups(p: Player, src: Source, pile: PileEntry[], sevenLock: boolean): { byRank: Map<Rank, Card[]>; legal: Card[] } {
+  const cards = cardsFromSource(p, src);
+  const legal = cards.filter(c => canPlayCards([c], pile, sevenLock));
+  const byRank = new Map<Rank, Card[]>();
+  for (const c of legal) {
+    const arr = byRank.get(c.rank) ?? [];
+    arr.push(c);
+    byRank.set(c.rank, arr);
+  }
+  return { byRank, legal };
+}
+
+// Easy AI: random legal card, single-card plays only. Wastes specials freely.
+function aiPlayEasy(state: GameState, p: Player, src: Source): Action {
+  const { legal } = legalGroups(p, src, state.pile, state.sevenRestriction);
+  if (legal.length === 0) return { type: 'PICKUP_PILE' };
+  const choice = legal[Math.floor(Math.random() * legal.length)];
+  return { type: 'PLAY_CARDS', ids: [choice.id] };
+}
+
+// Normal AI: lowest legal non-special rank, multi-stacked. Saves 2/10/JK loosely.
+function aiPlayNormal(state: GameState, p: Player, src: Source): Action {
+  const { byRank, legal } = legalGroups(p, src, state.pile, state.sevenRestriction);
+  if (legal.length === 0) return { type: 'PICKUP_PILE' };
+  const ranks = [...byRank.keys()].sort((a, b) => {
+    const sa = SPECIAL_RANKS.has(a), sb = SPECIAL_RANKS.has(b);
+    if (sa !== sb) return sa ? 1 : -1;
+    return RANK_VALUE[a] - RANK_VALUE[b];
+  });
+  const chosen = byRank.get(ranks[0])!;
+  return { type: 'PLAY_CARDS', ids: chosen.map(c => c.id) };
+}
+
+// Hard AI: contextual scoring — saves specials for high-value moments, opportunistically
+// triggers four-3s for the bonus-turn exception, picks up sooner if all options are bad.
+function aiPlayHard(state: GameState, p: Player, src: Source): Action {
+  const { byRank, legal } = legalGroups(p, src, state.pile, state.sevenRestriction);
+  if (legal.length === 0) return { type: 'PICKUP_PILE' };
+
+  // 1) Opportunistic: four 3s in one go = burn + bonus turn (the only burn that grants extra).
+  const threes = byRank.get('3');
+  if (threes && threes.length >= 4) {
+    return { type: 'PLAY_CARDS', ids: threes.slice(0, 4).map(c => c.id) };
+  }
+
+  // 2) Prefer non-special, lowest rank (multi-stack to deplete hand faster).
+  const nonSpecialRanks = [...byRank.keys()].filter(r => !SPECIAL_RANKS.has(r));
+  if (nonSpecialRanks.length > 0) {
+    nonSpecialRanks.sort((a, b) => RANK_VALUE[a] - RANK_VALUE[b]);
+    const chosen = byRank.get(nonSpecialRanks[0])!;
+    return { type: 'PLAY_CARDS', ids: chosen.map(c => c.id) };
+  }
+
+  // 3) Only specials are legal. Choose the cheapest based on context.
+  const top = topEffRank(state.pile);
+  const pileSize = state.pile.length;
+  const has2 = byRank.get('2');
+  const has10 = byRank.get('10');
+  const hasJK = byRank.get('JK');
+
+  // Tiny pile + no non-special options → pick up rather than waste a specialist.
+  // (Picking up 0–2 cards is cheaper than burning a 2/10/Joker.)
+  if (pileSize <= 2 && p.hand.length > 1) return { type: 'PICKUP_PILE' };
+
+  // Use a 2 to neutralize a high pile-top (J/Q/K/A) — best return on a reset.
+  if (has2 && top && RANK_VALUE[top] >= 11) {
+    return { type: 'PLAY_CARDS', ids: [has2[0].id] };
+  }
+  // Use a 10 to wipe a meaningful pile (≥4 cards) — turn passes but you remove threats.
+  if (has10 && pileSize >= 4) {
+    return { type: 'PLAY_CARDS', ids: [has10[0].id] };
+  }
+  // Use a Joker to escape — copies whatever's beneath.
+  if (hasJK) return { type: 'PLAY_CARDS', ids: [hasJK[0].id] };
+  // Cheapest fallback: 2 (resets — at least keeps initiative going).
+  if (has2) return { type: 'PLAY_CARDS', ids: [has2[0].id] };
+  if (has10) return { type: 'PLAY_CARDS', ids: [has10[0].id] };
+  return { type: 'PICKUP_PILE' };
 }
 
 /* ----- Redaction (server → per-player view) ----- */

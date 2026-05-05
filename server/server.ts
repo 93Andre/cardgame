@@ -411,10 +411,13 @@ wss.on('connection', ws => {
         if (ref.id !== room.hostId) return err(ws, 'Only host can start');
         if (room.players.length < MIN_PLAYERS) return err(ws, `Need at least ${MIN_PLAYERS} players`);
         if (room.state) return err(ws, 'Already started');
+        const aiDifficulty = msg.aiDifficulty === 'easy' || msg.aiDifficulty === 'hard' ? msg.aiDifficulty : 'normal';
         room.state = newGame(
           room.players.length,
           room.players.map(p => p.name),
           room.players.map(p => p.isAi),
+          undefined,
+          aiDifficulty,
         );
         broadcast(room);
         persist();
@@ -458,6 +461,8 @@ wss.on('connection', ws => {
           room.players.length,
           room.players.map(p => p.name),
           room.players.map(p => p.isAi),
+          undefined,
+          room.state.aiDifficulty,
         );
         room.emotes = [];
         broadcast(room);

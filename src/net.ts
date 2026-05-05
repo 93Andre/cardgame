@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Action, GameState } from './shared/game';
+import type { Action, AiDifficulty, GameState } from './shared/game';
 
 export interface LobbyView {
   code: string;
@@ -35,7 +35,7 @@ export type ClientMsg =
   | { t: 'LIST_ROOMS' }
   | { t: 'ADD_AI' }
   | { t: 'REMOVE_AI' }
-  | { t: 'START' }
+  | { t: 'START'; aiDifficulty?: AiDifficulty }
   | { t: 'ACT'; action: Action }
   | { t: 'EMOTE'; emoji: string }
   | { t: 'PLAY_AGAIN' }

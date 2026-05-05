@@ -5,6 +5,7 @@ import {
   type Card,
   type GameState,
   type PileEntry,
+  type AiDifficulty,
   type Player,
   type PlayerStats,
   type Rank,
@@ -344,18 +345,33 @@ function HandStack({ count }: { count: number }) {
 }
 
 function PlayerArea({ player, isCurrent, isViewer, compact, faceDownClickable, onFaceDownClick, emotes,
-  faceUpClickable, onFaceUpClick, selectedFaceUpIds }: {
+  faceUpClickable, onFaceUpClick, selectedFaceUpIds, turnElapsedMs }: {
   player: Player; isCurrent: boolean; isViewer: boolean; compact?: boolean;
   faceDownClickable?: boolean; onFaceDownClick?: (id: string) => void;
   faceUpClickable?: boolean; onFaceUpClick?: (id: string) => void;
   selectedFaceUpIds?: Set<string>;
   emotes?: { id: string; playerId: number; emoji: string }[];
+  turnElapsedMs?: number;
 }) {
   const c = colorFor(player.id);
   // Compact mode: tighter padding, smaller text, face-up + face-down rendered side-by-side
   // in a single row so the tile stays short enough to fit around the table on mobile.
   return (
     <div className={`relative ${compact ? 'p-1.5' : 'p-2 sm:p-3'} rounded-lg border-2 ${isCurrent ? `${c.border} ${c.bg} ring-2 ${c.ring}` : 'border-gray-300 bg-white/60'} flex flex-col ${compact ? 'gap-1' : 'gap-2'} min-w-0`}>
+      {/* Turn-speed indicator: appears above the current player's tile after 15s of thinking,
+          fills proportionally over the next 30s. Subtle social pressure. */}
+      {isCurrent && typeof turnElapsedMs === 'number' && turnElapsedMs > 15000 && (
+        <div className="absolute -top-1 left-2 right-2 h-1 bg-gray-200 rounded-full overflow-hidden">
+          <div
+            className={`h-full transition-all duration-1000 ease-linear ${
+              turnElapsedMs > 35000 ? 'bg-rose-500'
+                : turnElapsedMs > 25000 ? 'bg-amber-500'
+                : 'bg-emerald-500'
+            }`}
+            style={{ width: `${Math.min(100, ((turnElapsedMs - 15000) / 30000) * 100)}%` }}
+          />
+        </div>
+      )}
       <div className={`flex items-center justify-between ${compact ? 'gap-1' : 'gap-2'}`}>
         <span className={`font-semibold flex items-center gap-1 truncate ${compact ? 'text-[11px]' : ''}`}>
           <span className={`inline-block w-2 h-2 rounded-full ${c.dot}`} />
@@ -456,21 +472,46 @@ function CircularTable({ players, current, viewer, direction, renderPlayer, cent
   const n = players.length;
   const nextIdx = nextActiveIndex(players, current, direction);
   const safeViewer = viewer >= 0 ? viewer : current;
-  // Detect narrow viewports to switch to a taller container + compact tiles.
-  const [narrow, setNarrow] = useState(typeof window !== 'undefined' ? window.innerWidth < 720 : false);
+  // Detect three orientations: portrait phone, landscape phone, desktop.
+  const detectLayout = (): 'portrait' | 'landscape' | 'desktop' => {
+    if (typeof window === 'undefined') return 'desktop';
+    const w = window.innerWidth, h = window.innerHeight;
+    if (w >= 900) return 'desktop';
+    if (w > h) return 'landscape';
+    return 'portrait';
+  };
+  const [layout, setLayout] = useState(detectLayout);
   useEffect(() => {
-    const onResize = () => setNarrow(window.innerWidth < 720);
+    const onResize = () => setLayout(detectLayout());
     window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
+    window.addEventListener('orientationchange', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('orientationchange', onResize);
+    };
   }, []);
 
-  const tileWidth = narrow ? 'clamp(110px, 30vw, 180px)' : 'clamp(140px, 22vw, 220px)';
-  const aspectRatio = narrow ? '4 / 5' : '5 / 4';
-  const minHeight = narrow ? 540 : 420;
-  // Slightly tighter perimeter on small player counts so tiles don't crowd the edge,
-  // and a slightly larger ry on narrow viewports to push tiles further from the centerpiece.
-  const rx = n <= 3 ? 0.34 : 0.40;
-  const ry = narrow ? (n <= 3 ? 0.40 : 0.42) : (n <= 3 ? 0.34 : 0.38);
+  // Layout-specific dimensions. Landscape uses a wider aspect to lay tiles along the
+  // long axis instead of stacking them — much better use of horizontal phone space.
+  const tileWidth =
+    layout === 'desktop'  ? 'clamp(140px, 22vw, 220px)' :
+    layout === 'landscape' ? 'clamp(95px, 18vw, 150px)' :
+                             'clamp(110px, 30vw, 180px)';
+  const aspectRatio =
+    layout === 'desktop'  ? '5 / 4' :
+    layout === 'landscape' ? '5 / 3' :
+                             '4 / 5';
+  const minHeight =
+    layout === 'desktop'  ? 420 :
+    layout === 'landscape' ? 280 :
+                             540;
+  const rx =
+    layout === 'landscape' ? (n <= 3 ? 0.42 : 0.45) :
+    n <= 3 ? 0.34 : 0.40;
+  const ry =
+    layout === 'desktop'   ? (n <= 3 ? 0.34 : 0.38) :
+    layout === 'landscape' ? (n <= 3 ? 0.34 : 0.38) :
+                             (n <= 3 ? 0.40 : 0.42);
 
   return (
     <div
@@ -509,7 +550,7 @@ function CircularTable({ players, current, viewer, direction, renderPlayer, cent
               width: tileWidth,
             }}
           >
-            {renderPlayer(p, p.id === nextIdx, narrow)}
+            {renderPlayer(p, p.id === nextIdx, layout !== 'desktop')}
           </div>
         );
       })}
@@ -1218,13 +1259,20 @@ function MenuScreen({ onLocal, onNetwork, prefilledCode }: { onLocal: () => void
   );
 }
 
-function LocalSetupScreen({ onStart, onBack }: { onStart: (humans: number, ais: number) => void; onBack: () => void }) {
+function LocalSetupScreen({ onStart, onBack }: { onStart: (humans: number, ais: number, aiDifficulty: AiDifficulty) => void; onBack: () => void }) {
   const [humans, setHumans] = useState(1);
   const [ais, setAis] = useState(2);
+  const [difficulty, setDifficulty] = useState<AiDifficulty>(() => {
+    try { const v = localStorage.getItem('ph_ai_difficulty'); return (v === 'easy' || v === 'normal' || v === 'hard') ? v : 'normal'; } catch { return 'normal'; }
+  });
   const total = humans + ais;
   const valid = humans >= 1 && total >= MIN_PLAYERS && total <= MAX_PLAYERS;
+  const setAndPersistDifficulty = (d: AiDifficulty) => {
+    setDifficulty(d);
+    try { localStorage.setItem('ph_ai_difficulty', d); } catch { /* ignore */ }
+  };
   return (
-    <div className="h-full flex flex-col items-center justify-center gap-6 p-6">
+    <div className="min-h-full flex flex-col items-center justify-center gap-6 p-6">
       <h2 className="text-3xl font-bold text-white drop-shadow">Local game setup</h2>
       <div className="flex flex-col gap-4 bg-white/70 p-6 rounded-lg border border-gray-300 w-80">
         <label className="flex items-center justify-between">
@@ -1239,15 +1287,41 @@ function LocalSetupScreen({ onStart, onBack }: { onStart: (humans: number, ais: 
             onChange={e => setAis(Math.max(0, Math.min(MAX_PLAYERS - 1, +e.target.value || 0)))}
             className="w-16 px-2 py-1 border rounded text-center" />
         </label>
+        {ais > 0 && (
+          <div className="flex flex-col gap-1.5">
+            <span className="text-sm text-gray-700">AI difficulty</span>
+            <div className="grid grid-cols-3 gap-1">
+              {(['easy', 'normal', 'hard'] as AiDifficulty[]).map(d => (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => setAndPersistDifficulty(d)}
+                  className={`px-2 py-1.5 rounded text-sm font-semibold capitalize ${
+                    difficulty === d
+                      ? d === 'easy' ? 'bg-emerald-500 text-white'
+                        : d === 'normal' ? 'bg-amber-500 text-white'
+                        : 'bg-rose-500 text-white'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >{d}</button>
+              ))}
+            </div>
+            <span className="text-[11px] text-gray-500 italic">
+              {difficulty === 'easy' && "Plays randomly. Wastes power cards."}
+              {difficulty === 'normal' && "Plays the lowest legal card. Saves power cards loosely."}
+              {difficulty === 'hard' && "Saves 2/10/Joker for high-value moments. Hunts the four-3s burn."}
+            </span>
+          </div>
+        )}
         <div className={`text-sm ${valid ? 'text-gray-600' : 'text-rose-600'}`}>
           Total: {total} {valid ? '' : `(must be ${MIN_PLAYERS}–${MAX_PLAYERS}, with at least 1 human)`}
         </div>
       </div>
       <div className="flex gap-3">
-        <button onClick={onBack} className="px-4 py-2 border border-gray-300 rounded">Back</button>
+        <button onClick={onBack} className="px-4 py-2 border border-gray-300 rounded bg-white/80">Back</button>
         <button
           disabled={!valid}
-          onClick={() => onStart(humans, ais)}
+          onClick={() => onStart(humans, ais, difficulty)}
           className={`px-6 py-2 rounded font-bold ${valid ? 'bg-amber-500 hover:bg-amber-600 text-white' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`}
         >Start</button>
       </div>
@@ -1352,6 +1426,21 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
   const [sortOn, setSortOn] = useState(true);
   const [logOpen, setLogOpen] = useState(false);
 
+  // Turn-speed indicator: track how long the current player has been "thinking".
+  // Resets whenever state.current changes. Tick once per second so the bar progresses smoothly.
+  const turnStartRef = useRef<number>(Date.now());
+  const lastCurrentRef = useRef<number>(state.current);
+  if (lastCurrentRef.current !== state.current) {
+    lastCurrentRef.current = state.current;
+    turnStartRef.current = Date.now();
+  }
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const turnElapsedMs = now - turnStartRef.current;
+
   // Ultimate mode: viewer can cut if they have cards matching the top of the pile.
   const myCutMatches = !isSpectator && state.mode === 'ultimate' && me ? cutMatches(state, viewer) : [];
   const canCut = myCutMatches.length > 0 && !isMyTurn; // cutting your own play is allowed but redundant — only show on others' turns
@@ -1411,6 +1500,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
                   onFaceUpClick={(id) => dispatch({ type: 'TOGGLE_SELECT', id })}
                   selectedFaceUpIds={selectedFaceUpIds}
                   emotes={emotes}
+                  turnElapsedMs={pp.id === state.current ? turnElapsedMs : undefined}
                 />
               );
             };
@@ -1957,6 +2047,13 @@ function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; o
   const isHost = conn.lobby.myId === conn.lobby.hostId;
   const enough = conn.lobby.players.length >= MIN_PLAYERS;
   const shareUrl = `${location.origin}${location.pathname}?room=${conn.lobby.code}`;
+  const hasAi = conn.lobby.players.some(p => p.isAi);
+  const lobbyDifficulty = (typeof window !== 'undefined' && (localStorage.getItem('ph_ai_difficulty') as AiDifficulty)) || 'normal';
+  const [aiDifficulty, setAiDifficulty] = useState<AiDifficulty>(lobbyDifficulty);
+  const setAndPersistDifficulty = (d: AiDifficulty) => {
+    setAiDifficulty(d);
+    try { localStorage.setItem('ph_ai_difficulty', d); } catch { /* ignore */ }
+  };
   return (
     <div className="h-full flex flex-col items-center justify-center gap-4 p-6">
       <h2 className="text-3xl font-bold">Room {conn.lobby.code}</h2>
@@ -1993,14 +2090,35 @@ function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; o
             className="px-3 py-1 text-sm bg-white/80 border border-gray-300 rounded disabled:opacity-50">– AI</button>
         </div>
       )}
+      {isHost && hasAi && (
+        <div className="flex flex-col items-center gap-1.5 bg-white/80 px-3 py-2 rounded-lg border border-gray-300">
+          <span className="text-xs text-gray-600">AI difficulty</span>
+          <div className="grid grid-cols-3 gap-1">
+            {(['easy', 'normal', 'hard'] as AiDifficulty[]).map(d => (
+              <button
+                key={d}
+                type="button"
+                onClick={() => setAndPersistDifficulty(d)}
+                className={`px-3 py-1 rounded text-xs font-semibold capitalize ${
+                  aiDifficulty === d
+                    ? d === 'easy' ? 'bg-emerald-500 text-white'
+                      : d === 'normal' ? 'bg-amber-500 text-white'
+                      : 'bg-rose-500 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >{d}</button>
+            ))}
+          </div>
+        </div>
+      )}
       {isHost ? (
         <button
           disabled={!enough}
-          onClick={() => conn.send({ t: 'START' })}
+          onClick={() => conn.send({ t: 'START', aiDifficulty })}
           className={`px-6 py-3 rounded-lg font-bold shadow ${enough ? 'bg-amber-500 hover:bg-amber-600 text-white' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`}
         >Start game ({conn.lobby.players.length})</button>
       ) : (
-        <div className="text-gray-600">Waiting for host to start…</div>
+        <div className="text-white/80">Waiting for host to start…</div>
       )}
       <div className="flex gap-4 items-center">
         <button onClick={onLeave} className="text-sm text-gray-600 underline">Leave room</button>
@@ -2120,7 +2238,7 @@ function LocalCutPromptScreen({ state, playerId, matches, onCut, onSkip }: {
   );
 }
 
-function LocalGame({ humans, ais, aiSpeed, onExit }: { humans: number; ais: number; aiSpeed: number; onExit: () => void }) {
+function LocalGame({ humans, ais, aiSpeed, aiDifficulty, onExit }: { humans: number; ais: number; aiSpeed: number; aiDifficulty: AiDifficulty; onExit: () => void }) {
   const init = useMemo(() => {
     const total = humans + ais;
     const names = [
@@ -2131,8 +2249,8 @@ function LocalGame({ humans, ais, aiSpeed, onExit }: { humans: number; ais: numb
       ...Array.from({ length: humans }, () => false),
       ...Array.from({ length: ais }, () => true),
     ];
-    return newGame(total, names, aiSeats);
-  }, [humans, ais]);
+    return newGame(total, names, aiSeats, undefined, aiDifficulty);
+  }, [humans, ais, aiDifficulty]);
   const [state, dispatch] = useReducer(reducer, init);
   const { toasts } = useEventEffects(state.log, state.players.length === 0);
   const aiTimer = useRef<number | null>(null);
@@ -2240,6 +2358,7 @@ function LocalGame({ humans, ais, aiSpeed, onExit }: { humans: number; ais: numb
     playerCount: humans + ais,
     names: state.players.map(p => p.name),
     aiSeats: state.players.map(p => p.isAi ?? false),
+    aiDifficulty,
   });
 
   let body: React.ReactNode;
@@ -2374,7 +2493,7 @@ export default function App() {
   const [muted, setMuted] = useState(sfx.muted);
   const [volume, setVolume] = useState(sfx.volume);
   const [aiSpeed, setAiSpeed] = useState(loadAiSpeed());
-  const [localCfg, setLocalCfg] = useState<{ humans: number; ais: number } | null>(null);
+  const [localCfg, setLocalCfg] = useState<{ humans: number; ais: number; aiDifficulty: AiDifficulty } | null>(null);
 
   const toggleMute = (m: boolean) => { setMuted(m); sfx.setMuted(m); };
   const changeVolume = (v: number) => { setVolume(v); sfx.setVolume(v); };
@@ -2382,8 +2501,8 @@ export default function App() {
 
   let body: React.ReactNode;
   if (mode === 'menu') body = <MenuScreen onLocal={() => setMode('localSetup')} onNetwork={() => setMode('network')} prefilledCode={urlRoom} />;
-  else if (mode === 'localSetup') body = <LocalSetupScreen onStart={(h, a) => { setLocalCfg({ humans: h, ais: a }); setMode('local'); }} onBack={() => setMode('menu')} />;
-  else if (mode === 'local' && localCfg) body = <LocalGame humans={localCfg.humans} ais={localCfg.ais} aiSpeed={aiSpeed} onExit={() => setMode('menu')} />;
+  else if (mode === 'localSetup') body = <LocalSetupScreen onStart={(h, a, d) => { setLocalCfg({ humans: h, ais: a, aiDifficulty: d }); setMode('local'); }} onBack={() => setMode('menu')} />;
+  else if (mode === 'local' && localCfg) body = <LocalGame humans={localCfg.humans} ais={localCfg.ais} aiSpeed={aiSpeed} aiDifficulty={localCfg.aiDifficulty} onExit={() => setMode('menu')} />;
   else if (mode === 'network') body = <NetworkGame onExit={() => setMode('menu')} prefilledCode={urlRoom} />;
 
   return (
