@@ -238,19 +238,35 @@ function CardFace({ card, small, hidden, selected, onClick, dim, jokerEffRank }:
 
 function AnimatedCard(props: CardFaceProps & { layoutId?: string; fromDeck?: boolean }) {
   const { layoutId, fromDeck, ...rest } = props;
-  // When a card was just drawn from the deck, fly in from the upper-center (deck zone)
-  // with a slight rotation to suggest a deal motion.
-  const initial = fromDeck
-    ? { y: -260, x: 80, scale: 0.65, opacity: 0, rotate: 25 }
-    : { scale: 0.6, opacity: 0 };
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  // For fromDeck cards: compute synchronously the offset from the card's natural place
+  // back to the deck's actual screen position, so the card literally flies from the deck.
+  // We do this in render via getBoundingClientRect — works because layout is settled by then
+  // (the parent already laid out for the previous render and React reconciles in place).
+  const fromDeckInitial = useMemo(() => {
+    if (!fromDeck) return null;
+    // Default fallback: above-and-right of where the card lands.
+    let x = 60, y = -360;
+    if (typeof window !== 'undefined' && deckPosRef.current && wrapperRef.current) {
+      const card = wrapperRef.current.getBoundingClientRect();
+      const cardCx = card.left + card.width / 2;
+      const cardCy = card.top + card.height / 2;
+      x = deckPosRef.current.x - cardCx;
+      y = deckPosRef.current.y - cardCy;
+    }
+    return { x, y, scale: 0.5, opacity: 0, rotate: -180 };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fromDeck]);
+  const initial = fromDeckInitial ?? { scale: 0.6, opacity: 0 };
   return (
     <motion.div
+      ref={wrapperRef}
       layoutId={layoutId}
       initial={initial}
-      animate={{ y: 0, x: 0, scale: 1, opacity: 1, rotate: 0 }}
+      animate={{ x: 0, y: 0, scale: 1, opacity: 1, rotate: 0 }}
       exit={{ scale: 0.6, opacity: 0 }}
       transition={fromDeck
-        ? { type: 'spring', stiffness: 200, damping: 22, delay: 0.05 }
+        ? { duration: 0.7, ease: [0.16, 1, 0.3, 1], delay: 0.08 }
         : { type: 'spring', stiffness: 300, damping: 28 }
       }
     >
@@ -260,6 +276,21 @@ function AnimatedCard(props: CardFaceProps & { layoutId?: string; fromDeck?: boo
 }
 
 /* ============== Player area ============== */
+
+// Visual rank medal for a player who has finished. 1st = crown, 2nd = silver, 3rd = bronze, then numeric.
+function RankMedal({ pos }: { pos: number }) {
+  const emoji = pos === 1 ? '👑' : pos === 2 ? '🥈' : pos === 3 ? '🥉' : '🏅';
+  const ring = pos === 1 ? 'border-amber-400 bg-amber-50 text-amber-800'
+    : pos === 2 ? 'border-slate-300 bg-slate-50 text-slate-700'
+    : pos === 3 ? 'border-orange-400 bg-orange-50 text-orange-800'
+    : 'border-emerald-400 bg-emerald-50 text-emerald-800';
+  return (
+    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full border text-[10px] font-bold ${ring}`}>
+      <span className="text-sm leading-none">{emoji}</span>
+      <span>#{pos}</span>
+    </span>
+  );
+}
 
 // Compact hand-depth visual: a horizontal fan of card backs whose count tracks the actual hand size.
 function HandStack({ count }: { count: number }) {
@@ -301,7 +332,7 @@ function PlayerArea({ player, isCurrent, isViewer, faceDownClickable, onFaceDown
         </span>
         <span className="flex items-center gap-1.5 whitespace-nowrap">
           <HandStack count={player.hand.length} />
-          {player.out && <span className="ml-1 px-1 py-0.5 bg-emerald-200 rounded text-[10px]">#{player.finishPos}</span>}
+          {player.out && player.finishPos !== null && <RankMedal pos={player.finishPos} />}
         </span>
       </div>
       <div className="flex gap-1 flex-wrap">
@@ -394,10 +425,29 @@ function CardStack({ count, top, layerCards, emptyLabel, tone = 'normal' }: {
   );
 }
 
+// Refs the deck's on-screen position so AnimatedCard can fly from there into the hand.
+const deckPosRef: React.MutableRefObject<{ x: number; y: number } | null> = { current: null };
+
 function CenterPiles({ deckCount, pile, burnedCount, lastBurnSize }: {
   deckCount: number; pile: PileEntry[]; burnedCount: number; lastBurnSize: number;
 }) {
   const top = pile[pile.length - 1];
+  const deckRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const update = () => {
+      if (deckRef.current) {
+        const r = deckRef.current.getBoundingClientRect();
+        deckPosRef.current = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      }
+    };
+    update();
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+    };
+  });
 
   // Trigger pile-to-burn animation each time burnedCount jumps.
   const [burnFlight, setBurnFlight] = useState<{ id: number; count: number } | null>(null);
@@ -416,7 +466,7 @@ function CenterPiles({ deckCount, pile, burnedCount, lastBurnSize }: {
 
   return (
     <div className="relative flex items-end gap-5 sm:gap-7 justify-center">
-      <div className="flex flex-col items-center gap-1">
+      <div className="flex flex-col items-center gap-1" ref={deckRef}>
         <CardStack count={deckCount} />
         <span className="text-xs text-gray-600">deck: {deckCount}</span>
       </div>
@@ -1363,9 +1413,22 @@ function EndScreen({ state, onPlayAgain }: { state: GameState; onPlayAgain: () =
         className="text-3xl sm:text-5xl font-black text-center px-4 z-10"
       >💩 {loser?.name} is the Poop Head!</motion.h1>
 
-      <ol className="bg-white/90 p-4 rounded-lg border border-gray-300 z-10 min-w-[260px]">
-        {order.map(p => <li key={p.id} className="flex items-center gap-2"><span className={`inline-block w-2 h-2 rounded-full ${colorFor(p.id).dot}`} />#{p.finishPos} — {p.name}</li>)}
-        <li className="text-rose-700 font-semibold flex items-center gap-2"><span className={`inline-block w-2 h-2 rounded-full ${colorFor(loser?.id ?? 0).dot}`} />#{state.players.length} (Poop Head) — {loser?.name}</li>
+      <ol className="bg-white/90 p-4 rounded-lg border border-gray-300 z-10 min-w-[260px] space-y-1.5">
+        {order.map(p => (
+          <li key={p.id} className="flex items-center gap-2">
+            <RankMedal pos={p.finishPos!} />
+            <span className={`inline-block w-2 h-2 rounded-full ${colorFor(p.id).dot}`} />
+            <span>{p.name}</span>
+          </li>
+        ))}
+        <li className="text-rose-700 font-semibold flex items-center gap-2">
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full border border-rose-400 bg-rose-50 text-rose-800 text-[10px] font-bold">
+            <span className="text-sm leading-none">💩</span>
+            <span>#{state.players.length}</span>
+          </span>
+          <span className={`inline-block w-2 h-2 rounded-full ${colorFor(loser?.id ?? 0).dot}`} />
+          <span>{loser?.name} (Poop Head)</span>
+        </li>
       </ol>
 
       {/* Awards row */}
