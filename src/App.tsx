@@ -224,15 +224,23 @@ function CardFace({ card, small, hidden, selected, onClick, dim, jokerEffRank }:
   );
 }
 
-function AnimatedCard(props: CardFaceProps & { layoutId?: string }) {
-  const { layoutId, ...rest } = props;
+function AnimatedCard(props: CardFaceProps & { layoutId?: string; fromDeck?: boolean }) {
+  const { layoutId, fromDeck, ...rest } = props;
+  // When a card was just drawn from the deck, fly in from the upper-center (deck zone)
+  // with a slight rotation to suggest a deal motion.
+  const initial = fromDeck
+    ? { y: -260, x: 80, scale: 0.65, opacity: 0, rotate: 25 }
+    : { scale: 0.6, opacity: 0 };
   return (
     <motion.div
       layoutId={layoutId}
-      initial={{ scale: 0.6, opacity: 0 }}
-      animate={{ scale: 1, opacity: 1 }}
+      initial={initial}
+      animate={{ y: 0, x: 0, scale: 1, opacity: 1, rotate: 0 }}
       exit={{ scale: 0.6, opacity: 0 }}
-      transition={{ type: 'spring', stiffness: 300, damping: 28 }}
+      transition={fromDeck
+        ? { type: 'spring', stiffness: 200, damping: 22, delay: 0.05 }
+        : { type: 'spring', stiffness: 300, damping: 28 }
+      }
     >
       <CardFace {...rest} />
     </motion.div>
@@ -364,13 +372,29 @@ function CenterPiles({ deckCount, pile, burnedCount, lastBurnSize }: {
   deckCount: number; pile: PileEntry[]; burnedCount: number; lastBurnSize: number;
 }) {
   const top = pile[pile.length - 1];
+
+  // Trigger pile-to-burn animation each time burnedCount jumps.
+  const [burnFlight, setBurnFlight] = useState<{ id: number; count: number } | null>(null);
+  const prevBurned = useRef(burnedCount);
+  useEffect(() => {
+    if (burnedCount > prevBurned.current) {
+      const id = Date.now();
+      const count = Math.min(burnedCount - prevBurned.current, 8);
+      setBurnFlight({ id, count });
+      const t = setTimeout(() => setBurnFlight(f => (f?.id === id ? null : f)), 1400);
+      prevBurned.current = burnedCount;
+      return () => clearTimeout(t);
+    }
+    prevBurned.current = burnedCount;
+  }, [burnedCount]);
+
   return (
-    <div className="flex items-end gap-5 sm:gap-7 justify-center">
+    <div className="relative flex items-end gap-5 sm:gap-7 justify-center">
       <div className="flex flex-col items-center gap-1">
         <CardStack count={deckCount} />
         <span className="text-xs text-gray-600">deck: {deckCount}</span>
       </div>
-      <div className="flex flex-col items-center gap-1">
+      <div className="flex flex-col items-center gap-1 relative">
         <CardStack
           count={pile.length}
           top={
@@ -383,6 +407,25 @@ function CenterPiles({ deckCount, pile, burnedCount, lastBurnSize }: {
           emptyLabel="empty"
         />
         <span className="text-xs text-gray-600">pile: {pile.length}</span>
+
+        {/* Cards flying from pile → burn pile (one per burn event) */}
+        {burnFlight && Array.from({ length: burnFlight.count }).map((_, i) => (
+          <motion.div
+            key={`burnfly-${burnFlight.id}-${i}`}
+            initial={{ x: 0, y: 0, opacity: 1, rotate: 0, scale: 1 }}
+            animate={{
+              x: 90,         // approx distance from pile to burn-pile center (gap-7 + card width)
+              y: -10 + Math.random() * 20,
+              opacity: 0,
+              rotate: 360 + (Math.random() - 0.5) * 60,
+              scale: 0.7,
+            }}
+            transition={{ duration: 0.7, delay: i * 0.05, ease: 'easeIn' }}
+            className="absolute left-0 top-0 pointer-events-none"
+          >
+            <CardFace hidden />
+          </motion.div>
+        ))}
       </div>
       <div className="flex flex-col items-center gap-1 relative">
         <CardStack
@@ -689,6 +732,35 @@ function RevealOverlay({ playerName, card }: { playerName: string; card: Card })
   );
 }
 
+// Detect cards newly added to the viewer's hand specifically because the deck shrank
+// (a refill draw). Computed during render so framer-motion's initial prop is correct on
+// the very first mount of those new cards.
+function useFromDeckTracker(state: GameState | null, viewerId: number): Set<string> {
+  const prev = useRef<{ hand: Set<string>; deck: number }>({ hand: new Set(), deck: 0 });
+
+  const fromDeck = useMemo<Set<string>>(() => {
+    if (!state) return new Set();
+    const player = state.players[viewerId];
+    if (!player) return new Set();
+    const curHand = new Set(player.hand.map(c => c.id));
+    const newOnes = [...curHand].filter(id => !prev.current.hand.has(id));
+    const drewFromDeck = state.deck.length < prev.current.deck;
+    return drewFromDeck ? new Set(newOnes) : new Set();
+  }, [state, viewerId]);
+
+  useEffect(() => {
+    if (!state) return;
+    const player = state.players[viewerId];
+    if (!player) {
+      prev.current = { hand: new Set(), deck: state.deck.length };
+      return;
+    }
+    prev.current = { hand: new Set(player.hand.map(c => c.id)), deck: state.deck.length };
+  }, [state, viewerId]);
+
+  return fromDeck;
+}
+
 function useRevealOverlay(state: GameState | null) {
   const [shown, setShown] = useState<{ name: string; card: Card; ts: number } | null>(null);
   useEffect(() => {
@@ -952,9 +1024,10 @@ function sortCards(cards: Card[]): Card[] {
   return cards.slice().sort((a, b) => RANK_VALUE[a.rank] - RANK_VALUE[b.rank] || a.suit.localeCompare(b.suit));
 }
 
-function PlayScreen({ state, dispatch, viewerId, emotes, onEmote }: {
+function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }: {
   state: GameState; dispatch: (a: Action) => void; viewerId: number | null;
   emotes?: { id: string; playerId: number; emoji: string }[]; onEmote?: (e: string) => void;
+  fromDeckIds?: Set<string>;
 }) {
   const isSpectator = viewerId === -1;
   const viewer = isSpectator ? state.current : (viewerId ?? state.current);
@@ -1050,13 +1123,11 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote }: {
               <div className="flex gap-2 flex-wrap">
                 <LayoutGroup>
                   {displayCards.map(c => {
-                    // Only compute legality (dim) on the viewer's own turn — otherwise the visual
-                    // would flicker every time someone else changes the pile, even though the
-                    // viewer can't act on that information.
                     const wouldBeOk = isMyTurn ? canPlayCards([c], state.pile, state.sevenRestriction) : true;
                     return (
                       <AnimatedCard
                         key={c.id} layoutId={c.id} card={c}
+                        fromDeck={fromDeckIds?.has(c.id)}
                         selected={state.selected.includes(c.id)}
                         dim={isMyTurn && !wouldBeOk && state.selected.length === 0}
                         onClick={isMyTurn ? () => dispatch({ type: 'TOGGLE_SELECT', id: c.id }) : undefined}
@@ -1116,37 +1187,61 @@ function EmoteBar({ onEmote }: { onEmote: (e: string) => void }) {
 function RevealChoiceScreen({ state, dispatch, viewerId }: {
   state: GameState; dispatch: (a: Action) => void; viewerId: number | null;
 }) {
-  const cards = state.pendingReveal?.cards ?? [];
+  const cards = sortCards(state.pendingReveal?.cards ?? []);
   const picker = state.players[state.current];
   const isMyChoice = viewerId === null
     ? !picker?.isAi
     : (viewerId === state.current && !picker?.isAi);
   return (
-    <div className="h-full flex flex-col items-center justify-center gap-5 p-6">
-      <h2 className="text-2xl sm:text-3xl font-bold text-center">
-        {picker?.name} picked up the pile
-      </h2>
-      <p className="text-gray-700 text-sm text-center max-w-md">
-        {isMyChoice
-          ? `Pick ONE card to reveal to everyone. The rest stay private in your hand.`
-          : `Waiting for ${picker?.name} to choose a card to reveal…`}
-      </p>
-      <div className="flex flex-wrap gap-2 justify-center max-w-3xl">
+    <div className="min-h-full flex flex-col items-center justify-center gap-5 p-6 bg-gradient-to-b from-amber-100/60 to-rose-100/60">
+      <motion.div
+        initial={{ scale: 0.7, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+        transition={{ type: 'spring', stiffness: 240 }}
+        className="flex flex-col items-center gap-2"
+      >
+        <div className="text-4xl">🃏</div>
+        <h2 className="text-2xl sm:text-4xl font-black text-center">
+          {picker?.name} picked up the pile
+        </h2>
+        {isMyChoice ? (
+          <p className="text-base sm:text-lg text-amber-900 font-semibold text-center max-w-xl">
+            👇 Click <span className="underline">one card</span> below to reveal it to everyone. The rest go privately into your hand.
+          </p>
+        ) : (
+          <p className="text-base text-gray-700 text-center">Waiting for {picker?.name} to choose a card to reveal…</p>
+        )}
+      </motion.div>
+
+      <div className="flex flex-wrap gap-3 justify-center max-w-5xl px-4 py-6 bg-white/60 rounded-2xl border border-amber-300 shadow-inner">
         {cards.map(card => (
-          <motion.div
+          <motion.button
             key={card.id}
-            whileHover={isMyChoice ? { scale: 1.1, y: -6 } : undefined}
+            type="button"
+            onClick={isMyChoice ? () => dispatch({ type: 'REVEAL_CHOICE', id: card.id }) : undefined}
+            disabled={!isMyChoice}
+            whileHover={isMyChoice ? { scale: 1.15, y: -10 } : undefined}
             whileTap={isMyChoice ? { scale: 0.95 } : undefined}
+            initial={{ y: 20, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            transition={{ type: 'spring', stiffness: 300, damping: 22 }}
+            className={`bg-transparent border-0 p-0 ${isMyChoice ? 'cursor-pointer' : 'cursor-default'}`}
+            aria-label={`Reveal ${card.rank}${card.suit}`}
           >
-            <CardFace
-              card={card}
-              onClick={isMyChoice ? () => dispatch({ type: 'REVEAL_CHOICE', id: card.id }) : undefined}
-            />
-          </motion.div>
+            <div className={isMyChoice ? 'ring-2 ring-amber-400 rounded-md transition-shadow hover:shadow-2xl hover:ring-4 hover:ring-amber-500' : 'opacity-80'}>
+              <CardFace card={card} />
+            </div>
+          </motion.button>
         ))}
       </div>
+
+      {isMyChoice && (
+        <div className="text-xs text-gray-600 italic">Tap a card to reveal it · You'll keep all {cards.length} cards in your hand.</div>
+      )}
       {!isMyChoice && picker?.isAi && (
-        <div className="text-sm text-gray-600 italic">AI is choosing…</div>
+        <div className="text-sm text-gray-600 italic flex items-center gap-2">
+          <motion.span animate={{ opacity: [0.4, 1, 0.4] }} transition={{ repeat: Infinity, duration: 1.4 }}>•••</motion.span>
+          AI is choosing…
+        </div>
       )}
     </div>
   );
@@ -1395,6 +1490,14 @@ function LocalGame({ humans, ais, onExit }: { humans: number; ais: number; onExi
   const { dealing, finishDeal } = useDealAnimationGate(state);
   const reveal = useRevealOverlay(state);
 
+  // Cards just drawn from the deck — used for the deck→hand fly-in animation.
+  // Computed up here (not inside PlayScreen) so it survives phase transitions.
+  const _localViewerForDraw = useMemo(() => {
+    const idx = state.players.findIndex(p => !p.isAi);
+    return Math.max(0, idx);
+  }, [state.players]);
+  const fromDeckIds = useFromDeckTracker(state, _localViewerForDraw);
+
   // Local-mode viewer: the most recent HUMAN player. AI turns don't shift this — so
   // when an AI plays, the device keeps showing the human's hand (or hides nothing of theirs).
   const [localViewerId, setLocalViewerId] = useState<number>(() =>
@@ -1510,10 +1613,10 @@ function LocalGame({ humans, ais, onExit }: { humans: number; ais: number; onExi
       case 'swap': body = <SwapScreen state={state} dispatch={dispatch} viewerId={null} />; break;
       case 'pass':
         body = shouldSkipPass
-          ? <PlayScreen state={state} dispatch={dispatch} viewerId={localViewerId} />
+          ? <PlayScreen state={state} dispatch={dispatch} viewerId={localViewerId} fromDeckIds={fromDeckIds} />
           : <PassScreen state={state} dispatch={dispatch} />;
         break;
-      case 'play': body = <PlayScreen state={state} dispatch={dispatch} viewerId={localViewerId} />; break;
+      case 'play': body = <PlayScreen state={state} dispatch={dispatch} viewerId={localViewerId} fromDeckIds={fromDeckIds} />; break;
       case 'flipFaceDown': body = <FlipScreen state={state} dispatch={dispatch} viewerId={localViewerId} />; break;
       case 'reveal': body = <RevealChoiceScreen state={state} dispatch={dispatch} viewerId={localViewerId} />; break;
       case 'end': body = <EndScreen state={state} onPlayAgain={restart} />; break;
@@ -1542,6 +1645,8 @@ function NetworkGame({ onExit, prefilledCode }: { onExit: () => void; prefilledC
   const { toasts } = useEventEffects(conn.state?.log ?? [], conn.lobby?.code);
   const { dealing, finishDeal } = useDealAnimationGate(conn.state);
   const reveal = useRevealOverlay(conn.state);
+  const myId = conn.session?.spectator ? -1 : conn.lobby?.myId ?? 0;
+  const fromDeckIds = useFromDeckTracker(conn.state, myId);
 
   const dispatch = (action: Action) => conn.send({ t: 'ACT', action });
 
@@ -1562,12 +1667,12 @@ function NetworkGame({ onExit, prefilledCode }: { onExit: () => void; prefilledC
   if (!conn.state) {
     body = <NetLobbyScreen conn={conn} onLeave={() => { conn.disconnect(); onExit(); }} prefilledCode={prefilledCode} />;
   } else {
-    const viewerId = conn.session?.spectator ? -1 : conn.lobby?.myId ?? 0;
+    const viewerId = myId;
     const onEmote = (e: string) => conn.send({ t: 'EMOTE', emoji: e });
     switch (conn.state.phase) {
       case 'swap': body = <SwapScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} />; break;
       case 'pass':
-      case 'play': body = <PlayScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} emotes={conn.lobby?.emotes} onEmote={onEmote} />; break;
+      case 'play': body = <PlayScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} emotes={conn.lobby?.emotes} onEmote={onEmote} fromDeckIds={fromDeckIds} />; break;
       case 'flipFaceDown': body = <FlipScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} />; break;
       case 'reveal': body = <RevealChoiceScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} />; break;
       case 'end': {
