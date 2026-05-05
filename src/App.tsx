@@ -198,17 +198,22 @@ const RED_SUITS: Suit[] = ['♥', '♦'];
 
 interface CardFaceProps {
   card?: Card;
-  small?: boolean;
+  size?: 'tiny' | 'small' | 'normal';   // tiny is for cramped compact tiles
+  small?: boolean;                       // back-compat: alias for size="small"
   hidden?: boolean;
   selected?: boolean;
   onClick?: () => void;
   dim?: boolean;
-  jokerEffRank?: Rank | null;  // shown as small badge when joker copies a rank
-  magnifyOnHover?: boolean;    // desktop: scale up on hover so the user can study the card
+  jokerEffRank?: Rank | null;
+  magnifyOnHover?: boolean;
 }
 
-function CardFace({ card, small, hidden, selected, onClick, dim, jokerEffRank, magnifyOnHover }: CardFaceProps) {
-  const w = small ? 'w-9 h-12 text-[10px] sm:w-10 sm:h-14 sm:text-xs' : 'w-14 h-20 text-sm sm:w-16 sm:h-24 sm:text-base';
+function CardFace({ card, size, small, hidden, selected, onClick, dim, jokerEffRank, magnifyOnHover }: CardFaceProps) {
+  const resolvedSize: 'tiny' | 'small' | 'normal' = size ?? (small ? 'small' : 'normal');
+  const w =
+    resolvedSize === 'tiny'  ? 'w-7 h-10 text-[8px]' :
+    resolvedSize === 'small' ? 'w-9 h-12 text-[10px] sm:w-10 sm:h-14 sm:text-xs' :
+                               'w-14 h-20 text-sm sm:w-16 sm:h-24 sm:text-base';
   const hoverCls = magnifyOnHover ? 'hover:scale-[2] hover:z-30 hover:shadow-2xl' : '';
   const base = `relative ${w} rounded-md border shadow-sm flex flex-col items-center justify-center select-none transition-all duration-150 ${hoverCls}`;
   if (hidden || !card) {
@@ -230,9 +235,9 @@ function CardFace({ card, small, hidden, selected, onClick, dim, jokerEffRank, m
       onClick={onClick}
       className={`${base} ${bg} ${colorCls} border-gray-300 ${onClick ? 'cursor-pointer hover:shadow-md' : ''} ${selected ? '-translate-y-3 ring-2 ring-amber-500' : ''} ${dim ? 'opacity-50' : ''}`}
     >
-      <div className="absolute top-0.5 left-1 leading-none font-bold">{isJoker ? 'J' : card.rank}</div>
-      <div className={small ? 'text-lg' : 'text-2xl'}>{isJoker ? '★' : card.suit}</div>
-      <div className="absolute bottom-0.5 right-1 leading-none font-bold rotate-180">{isJoker ? 'J' : card.rank}</div>
+      <div className="absolute top-0.5 left-0.5 leading-none font-bold">{isJoker ? 'J' : card.rank}</div>
+      <div className={resolvedSize === 'tiny' ? 'text-sm' : resolvedSize === 'small' ? 'text-lg' : 'text-2xl'}>{isJoker ? '★' : card.suit}</div>
+      <div className="absolute bottom-0.5 right-0.5 leading-none font-bold rotate-180">{isJoker ? 'J' : card.rank}</div>
       {isJoker && jokerEffRank && jokerEffRank !== 'JK' && (
         <div className="absolute -top-2 -right-2 px-1 py-0.5 bg-purple-700 text-white text-[10px] rounded-full font-bold">={jokerEffRank}</div>
       )}
@@ -326,22 +331,33 @@ function PlayerArea({ player, isCurrent, isViewer, compact, faceDownClickable, o
         </span>
       </div>
       {compact ? (
-        // Single combined row: face-up small followed by face-down placeholders
-        <div className="flex gap-0.5 items-center flex-wrap">
-          {player.faceUp.map(c2 => (
-            <AnimatedCard
-              key={c2.id} layoutId={c2.id} card={c2} small magnifyOnHover
-              selected={selectedFaceUpIds?.has(c2.id)}
-              onClick={faceUpClickable && onFaceUpClick ? () => onFaceUpClick(c2.id) : undefined}
-            />
-          ))}
-          {player.faceDown.map(c2 => (
-            <CardFace
-              key={c2.id} small hidden
-              onClick={faceDownClickable && onFaceDownClick ? () => onFaceDownClick(c2.id) : undefined}
-            />
-          ))}
-          {player.faceUp.length === 0 && player.faceDown.length === 0 && <span className="text-[9px] text-gray-500 italic">no cards</span>}
+        <div className="flex gap-1 items-center justify-between">
+          <div className="flex gap-0.5">
+            {player.faceUp.map(c2 => (
+              <AnimatedCard
+                key={c2.id} layoutId={c2.id} card={c2} size="tiny" magnifyOnHover
+                selected={selectedFaceUpIds?.has(c2.id)}
+                onClick={faceUpClickable && onFaceUpClick ? () => onFaceUpClick(c2.id) : undefined}
+              />
+            ))}
+            {player.faceUp.length === 0 && player.faceDown.length === 0 && (
+              <span className="text-[9px] text-gray-500 italic">no cards</span>
+            )}
+          </div>
+          {player.faceDown.length > 0 && (
+            faceDownClickable && onFaceDownClick ? (
+              <div className="flex gap-0.5">
+                {player.faceDown.map(c2 => (
+                  <CardFace key={c2.id} size="tiny" hidden onClick={() => onFaceDownClick(c2.id)} />
+                ))}
+              </div>
+            ) : (
+              <span className="flex items-center gap-0.5 text-[11px] text-gray-600">
+                <span className="inline-block w-3 h-4 rounded-sm bg-indigo-600 border border-indigo-800" />
+                <span className="font-bold">×{player.faceDown.length}</span>
+              </span>
+            )
+          )}
         </div>
       ) : (
         <>
