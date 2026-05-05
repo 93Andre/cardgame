@@ -241,35 +241,16 @@ function CardFace({ card, small, hidden, selected, onClick, dim, jokerEffRank, m
 
 function AnimatedCard(props: CardFaceProps & { layoutId?: string; fromDeck?: boolean }) {
   const { layoutId, fromDeck, magnifyOnHover, ...rest } = props;
-  const wrapperRef = useRef<HTMLDivElement>(null);
-  // For fromDeck cards: compute synchronously the offset from the card's natural place
-  // back to the deck's actual screen position, so the card literally flies from the deck.
-  // We do this in render via getBoundingClientRect — works because layout is settled by then
-  // (the parent already laid out for the previous render and React reconciles in place).
-  const fromDeckInitial = useMemo(() => {
-    if (!fromDeck) return null;
-    // Default fallback: above-and-right of where the card lands.
-    let x = 60, y = -360;
-    if (typeof window !== 'undefined' && deckPosRef.current && wrapperRef.current) {
-      const card = wrapperRef.current.getBoundingClientRect();
-      const cardCx = card.left + card.width / 2;
-      const cardCy = card.top + card.height / 2;
-      x = deckPosRef.current.x - cardCx;
-      y = deckPosRef.current.y - cardCy;
-    }
-    return { x, y, scale: 0.5, opacity: 0, rotate: -180 };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromDeck]);
-  const initial = fromDeckInitial ?? { scale: 0.6, opacity: 0 };
+  // Cards from a deck draw fade in AFTER the flying-overlay lands on top of them
+  // (so the visual reads as: card-back travels from deck → arrives at hand → reveals face).
   return (
     <motion.div
-      ref={wrapperRef}
       layoutId={layoutId}
-      initial={initial}
-      animate={{ x: 0, y: 0, scale: 1, opacity: 1, rotate: 0 }}
+      initial={{ scale: fromDeck ? 1 : 0.6, opacity: 0 }}
+      animate={{ scale: 1, opacity: 1 }}
       exit={{ scale: 0.6, opacity: 0 }}
       transition={fromDeck
-        ? { duration: 0.7, ease: [0.16, 1, 0.3, 1], delay: 0.08 }
+        ? { duration: 0.25, delay: 0.5 }
         : { type: 'spring', stiffness: 300, damping: 28 }
       }
     >
@@ -318,9 +299,12 @@ function HandStack({ count }: { count: number }) {
   );
 }
 
-function PlayerArea({ player, isCurrent, isViewer, faceDownClickable, onFaceDownClick, emotes }: {
+function PlayerArea({ player, isCurrent, isViewer, faceDownClickable, onFaceDownClick, emotes,
+  faceUpClickable, onFaceUpClick, selectedFaceUpIds }: {
   player: Player; isCurrent: boolean; isViewer: boolean;
   faceDownClickable?: boolean; onFaceDownClick?: (id: string) => void;
+  faceUpClickable?: boolean; onFaceUpClick?: (id: string) => void;
+  selectedFaceUpIds?: Set<string>;
   emotes?: { id: string; playerId: number; emoji: string }[];
 }) {
   const c = colorFor(player.id);
@@ -339,7 +323,13 @@ function PlayerArea({ player, isCurrent, isViewer, faceDownClickable, onFaceDown
         </span>
       </div>
       <div className="flex gap-1 flex-wrap">
-        {player.faceUp.map(c2 => <AnimatedCard key={c2.id} layoutId={c2.id} card={c2} small magnifyOnHover />)}
+        {player.faceUp.map(c2 => (
+          <AnimatedCard
+            key={c2.id} layoutId={c2.id} card={c2} small magnifyOnHover
+            selected={selectedFaceUpIds?.has(c2.id)}
+            onClick={faceUpClickable && onFaceUpClick ? () => onFaceUpClick(c2.id) : undefined}
+          />
+        ))}
         {player.faceUp.length === 0 && player.faceDown.length > 0 && (
           <span className="text-[10px] text-gray-500 italic">face-up empty</span>
         )}
@@ -828,22 +818,13 @@ function RevealOverlay({ playerName, card }: { playerName: string; card: Card })
   );
 }
 
-// Detect cards newly added to the viewer's hand specifically because the deck shrank
-// (a refill draw). Computed during render so framer-motion's initial prop is correct on
-// the very first mount of those new cards.
+// Detect cards newly added to the viewer's hand specifically because the deck shrank.
+// Maintains a stateful Set that stays populated for the duration of the fly-in animation
+// so the DeckDrawOverlay has time to show the visual journey.
+const FLY_DURATION_MS = 700;
 function useFromDeckTracker(state: GameState | null, viewerId: number): Set<string> {
+  const [active, setActive] = useState<Set<string>>(new Set());
   const prev = useRef<{ hand: Set<string>; deck: number }>({ hand: new Set(), deck: 0 });
-
-  const fromDeck = useMemo<Set<string>>(() => {
-    if (!state) return new Set();
-    const player = state.players[viewerId];
-    if (!player) return new Set();
-    const curHand = new Set(player.hand.map(c => c.id));
-    const newOnes = [...curHand].filter(id => !prev.current.hand.has(id));
-    const drewFromDeck = state.deck.length < prev.current.deck;
-    return drewFromDeck ? new Set(newOnes) : new Set();
-  }, [state, viewerId]);
-
   useEffect(() => {
     if (!state) return;
     const player = state.players[viewerId];
@@ -851,10 +832,52 @@ function useFromDeckTracker(state: GameState | null, viewerId: number): Set<stri
       prev.current = { hand: new Set(), deck: state.deck.length };
       return;
     }
-    prev.current = { hand: new Set(player.hand.map(c => c.id)), deck: state.deck.length };
+    const cur = new Set(player.hand.map(c => c.id));
+    const newOnes = [...cur].filter(id => !prev.current.hand.has(id));
+    const drewFromDeck = state.deck.length < prev.current.deck;
+    prev.current = { hand: cur, deck: state.deck.length };
+    if (drewFromDeck && newOnes.length > 0) {
+      setActive(s => new Set([...s, ...newOnes]));
+      const ids = newOnes;
+      const t = setTimeout(() => {
+        setActive(s => {
+          const next = new Set(s);
+          for (const id of ids) next.delete(id);
+          return next;
+        });
+      }, FLY_DURATION_MS + 100);
+      return () => clearTimeout(t);
+    }
   }, [state, viewerId]);
+  return active;
+}
 
-  return fromDeck;
+// Renders fixed-position card-back motion.divs that fly from the deck to the hand area.
+// Uses screen coordinates from deckPosRef (registered by CenterPiles' deck DOM element)
+// and falls back to the viewport center if the deck hasn't been measured yet.
+function DeckDrawOverlay({ ids }: { ids: string[] }) {
+  if (ids.length === 0) return null;
+  const from = deckPosRef.current ?? { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+  // Land near the bottom-center of the viewport (where the hand strip usually sits).
+  const to = { x: window.innerWidth / 2, y: window.innerHeight - 110 };
+  return (
+    <div className="fixed inset-0 pointer-events-none z-30">
+      <AnimatePresence>
+        {ids.map((id, i) => (
+          <motion.div
+            key={id}
+            initial={{ x: from.x - 32, y: from.y - 48, scale: 1, opacity: 1, rotate: 0 }}
+            animate={{ x: to.x - 32, y: to.y - 48, scale: 0.9, opacity: 1, rotate: -180 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: FLY_DURATION_MS / 1000, ease: [0.16, 1, 0.3, 1], delay: i * 0.08 }}
+            className="absolute"
+          >
+            <CardFace hidden />
+          </motion.div>
+        ))}
+      </AnimatePresence>
+    </div>
+  );
 }
 
 function useRevealOverlay(state: GameState | null) {
@@ -1174,16 +1197,24 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
         <div className="flex-1 p-3 sm:p-4 pt-14 sm:pt-14 flex flex-col gap-3 sm:gap-4 min-w-0">
           <StatusBar state={state} viewerId={viewerId} isMyTurn={isMyTurn} />
           <div className="grid gap-2 sm:gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-            {state.players.map((pp, i) => (
-              <PlayerArea
-                key={pp.id} player={pp}
-                isCurrent={i === state.current}
-                isViewer={i === viewer && !isSpectator}
-                faceDownClickable={isMyTurn && i === state.current && src === 'faceDown'}
-                onFaceDownClick={(id) => dispatch({ type: 'FLIP_FACEDOWN', id })}
-                emotes={emotes}
-              />
-            ))}
+            {state.players.map((pp, i) => {
+              const isOwnArea = i === state.current && isMyTurn;
+              const chainEligible = isOwnArea && src === 'hand' && state.deck.length === 0;
+              const selectedFaceUpIds = isOwnArea ? new Set(state.selected.filter(id => pp.faceUp.some(c => c.id === id))) : undefined;
+              return (
+                <PlayerArea
+                  key={pp.id} player={pp}
+                  isCurrent={i === state.current}
+                  isViewer={i === viewer && !isSpectator}
+                  faceDownClickable={isOwnArea && src === 'faceDown'}
+                  onFaceDownClick={(id) => dispatch({ type: 'FLIP_FACEDOWN', id })}
+                  faceUpClickable={chainEligible}
+                  onFaceUpClick={(id) => dispatch({ type: 'TOGGLE_SELECT', id })}
+                  selectedFaceUpIds={selectedFaceUpIds}
+                  emotes={emotes}
+                />
+              );
+            })}
           </div>
           <div className="my-2"><CenterPiles deckCount={state.deck.length} pile={state.pile} burnedCount={state.burnedCount} lastBurnSize={state.lastBurnSize} /></div>
 
@@ -1924,6 +1955,7 @@ function LocalGame({ humans, ais, aiSpeed, onExit }: { humans: number; ais: numb
       </div>
       <ToastStack toasts={toasts} />
       {body}
+      <DeckDrawOverlay ids={[...fromDeckIds]} />
       <AnimatePresence>
         {dealing && <DealAnimation playerNames={state.players.map(p => p.name)} onComplete={finishDeal} />}
         {reveal && <RevealOverlay key={reveal.ts} playerName={reveal.name} card={reveal.card} />}
@@ -1990,6 +2022,7 @@ function NetworkGame({ onExit, prefilledCode }: { onExit: () => void; prefilledC
       </div>
       <ToastStack toasts={toasts} />
       {body}
+      <DeckDrawOverlay ids={[...fromDeckIds]} />
       <AnimatePresence>
         {dealing && conn.state && <DealAnimation playerNames={conn.state.players.map(p => p.name)} onComplete={finishDeal} />}
         {reveal && <RevealOverlay key={reveal.ts} playerName={reveal.name} card={reveal.card} />}

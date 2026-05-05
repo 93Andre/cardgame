@@ -296,9 +296,33 @@ function playCardsByIds(state: GameState, ids: string[]): GameState {
   const src = activeSource(p, state.deck.length === 0);
   if (!src || src === 'faceDown') return state;
   if (ids.length === 0) return state;
-  const list = cardsFromSource(p, src);
-  const cards = ids.map(id => list.find(c => c.id === id)!).filter(Boolean) as Card[];
-  if (cards.length !== ids.length) return state;
+
+  // Cards may come from hand and/or face-up. The "hand → face-up chain" rule allows mixing
+  // when the deck is empty AND every remaining hand card is being played in the same move.
+  const handSelected: Card[] = [];
+  const faceUpSelected: Card[] = [];
+  for (const id of ids) {
+    const inHand = p.hand.find(c => c.id === id);
+    if (inHand) { handSelected.push(inHand); continue; }
+    const inFace = p.faceUp.find(c => c.id === id);
+    if (inFace) { faceUpSelected.push(inFace); continue; }
+    return state; // id not found in either source
+  }
+  const cards = [...handSelected, ...faceUpSelected];
+
+  if (src === 'hand') {
+    // Pure hand play is allowed any time. Chaining face-up cards requires:
+    //   (a) the deck is empty (so face-up is the genuine next source), and
+    //   (b) the play empties the hand (every hand card is included).
+    if (faceUpSelected.length > 0) {
+      if (state.deck.length > 0) return state;
+      if (handSelected.length !== p.hand.length) return state;
+    }
+  } else {
+    // Face-up source: hand must already be empty, so no hand cards expected here.
+    if (handSelected.length > 0) return state;
+  }
+
   if (!canPlayCards(cards, state.pile, state.sevenRestriction)) return state;
 
   let pile = state.pile.slice();
@@ -308,10 +332,12 @@ function playCardsByIds(state: GameState, ids: string[]): GameState {
   }
 
   const players = state.players.slice();
-  const updatedSrc = list.filter(c => !ids.includes(c.id));
-  const np: Player = { ...p };
-  if (src === 'hand') np.hand = updatedSrc;
-  else np.faceUp = updatedSrc;
+  const idSet = new Set(ids);
+  const np: Player = {
+    ...p,
+    hand: p.hand.filter(c => !idSet.has(c.id)),
+    faceUp: p.faceUp.filter(c => !idSet.has(c.id)),
+  };
   players[state.current] = np;
 
   const ranksSummary = cards.map(c => `${c.rank}${c.suit}`).join(' + ');
@@ -325,7 +351,10 @@ function playCardsByIds(state: GameState, ids: string[]): GameState {
     stats: bumpStats(state, state.current, { cardsPlayed: cards.length, powerCards: powerCount }),
     log: logLine(state, `${p.name} played ${ranksSummary}.`),
   };
-  return postPlay(next, state.current, src, cards);
+  // postPlay's source-used parameter only matters for hand-refill behaviour. Pass 'hand' if any
+  // hand cards were involved (the chain still counts as a hand-source play for refill purposes,
+  // though the deck being empty makes refill a no-op anyway).
+  return postPlay(next, state.current, handSelected.length > 0 ? 'hand' : 'faceUp', cards);
 }
 
 function postPlay(stateIn: GameState, playerIdx: number, sourceUsed: Source, played: Card[], wasCut = false): GameState {
@@ -506,14 +535,24 @@ export function reducer(state: GameState, action: Action): GameState {
       const p = state.players[state.current];
       const src = activeSource(p, state.deck.length === 0);
       if (!src || src === 'faceDown') return state;
-      const list = cardsFromSource(p, src);
-      const card = list.find(c => c.id === action.id);
+      const handCard = p.hand.find(c => c.id === action.id);
+      const faceUpCard = p.faceUp.find(c => c.id === action.id);
+      const card = handCard ?? faceUpCard;
       if (!card) return state;
+      // Source restrictions: if currently playing from face-up, hand cards aren't selectable
+      // (hand is empty there anyway). When playing from hand, face-up cards are selectable
+      // only when chaining is possible — deck must be empty. Final chain validity (all hand
+      // cards included) is checked at PLAY time.
+      if (src === 'faceUp' && handCard) return state;
+      if (src === 'hand' && faceUpCard && state.deck.length > 0) return state;
+
       const already = state.selected.includes(action.id);
       if (already) {
         return { ...state, selected: state.selected.filter(x => x !== action.id) };
       }
-      const sel = state.selected.map(id => list.find(c => c.id === id)!).filter(Boolean);
+      const sel = state.selected
+        .map(id => p.hand.find(c => c.id === id) ?? p.faceUp.find(c => c.id === id))
+        .filter(Boolean) as Card[];
       const allCards = [...sel, card];
       const nonJk = new Set(allCards.filter(c => c.rank !== 'JK').map(c => c.rank));
       if (nonJk.size > 1) return state;
