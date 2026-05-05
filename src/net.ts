@@ -14,6 +14,7 @@ export interface PublicRoom {
   code: string;
   host: string;
   playerCount: number;
+  connectedHumans: number;
   maxPlayers: number;
   started: boolean;
 }

@@ -328,41 +328,53 @@ function PlayerArea({ player, isCurrent, isViewer, faceDownClickable, onFaceDown
 
 /* ============== Center piles ============== */
 
-// Stacked card layers visualizing depth. Layers are capped so massive piles don't blow out the layout.
+// Stacked card layers visualizing depth. Top card is rendered DOMINANTLY at the front;
+// depth layers peek out behind it (down-right). This keeps the face-up pile card unmissable.
 function CardStack({ count, top, emptyLabel, tone = 'normal' }: {
   count: number;
-  top?: React.ReactNode;       // the topmost card (interactive / face-up). If absent and count > 0, a hidden card-back is used.
+  top?: React.ReactNode;
   emptyLabel?: string;
   tone?: 'normal' | 'burned';
 }) {
-  const MAX_LAYERS = 14;
+  const MAX_LAYERS = 12;
   const visibleLayers = Math.min(count, MAX_LAYERS);
-  // Background layers underneath the topmost card.
   const baseLayers = Math.max(0, visibleLayers - 1);
+  const layerStep = 1.6;
+  const padPx = baseLayers * layerStep;
   return (
-    <div className="relative w-14 h-20 sm:w-16 sm:h-24" style={{ marginTop: baseLayers * 1.5, marginRight: baseLayers * 1.2 }}>
-      {/* underlying stack layers */}
+    <div
+      className="relative"
+      style={{
+        // Reserve room for layers extending down-right beyond the top card's footprint.
+        width: `calc(4rem + ${padPx}px)`,
+        height: `calc(6rem + ${padPx}px)`,
+      }}
+    >
+      {/* depth layers — fan out down-right BEHIND the top card */}
       {Array.from({ length: baseLayers }).map((_, i) => {
-        const depth = baseLayers - i; // larger = deeper / further from top
-        const offset = depth * 1.2;
+        const depth = baseLayers - i;
+        const offset = depth * layerStep;
+        const layerCls = tone === 'burned'
+          ? 'border-rose-400/60 bg-gradient-to-b from-amber-100 to-rose-300'
+          : 'border-indigo-800/60 bg-indigo-700';
         return (
           <div
             key={i}
             aria-hidden
-            className={`absolute w-full h-full rounded-md border ${tone === 'burned' ? 'border-rose-400/60 bg-gradient-to-b from-amber-100 to-rose-300' : 'border-indigo-800/60 bg-indigo-700'}`}
+            className={`absolute w-14 h-20 sm:w-16 sm:h-24 rounded-md border ${layerCls}`}
             style={{
-              top: -offset, left: offset,
+              top: offset, left: offset,
               filter: `brightness(${1 - depth * 0.04})`,
               boxShadow: i === 0 ? '0 1px 2px rgba(0,0,0,0.15)' : undefined,
             }}
           />
         );
       })}
-      {/* top layer — actual interactive/visible card */}
-      <div className="relative">
+      {/* top card — face-up, prominent, no offset */}
+      <div className="absolute top-0 left-0">
         {count > 0
           ? (top ?? <CardFace hidden />)
-          : <div className="w-full h-full rounded-md border-2 border-dashed border-gray-400 flex items-center justify-center text-[10px] text-gray-400">{emptyLabel ?? 'empty'}</div>}
+          : <div className="w-14 h-20 sm:w-16 sm:h-24 rounded-md border-2 border-dashed border-gray-400 flex items-center justify-center text-[10px] text-gray-400">{emptyLabel ?? 'empty'}</div>}
       </div>
     </div>
   );
@@ -1361,8 +1373,13 @@ function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; o
                               {r.playerCount}/{r.maxPlayers} players · {r.started ? 'in progress' : 'lobby'}
                             </span>
                           </span>
-                          <span className={`text-xs ${r.started ? 'text-rose-600' : 'text-emerald-600'}`}>
-                            {r.started ? 'spectate' : 'join'}
+                          <span className="flex items-center gap-1.5">
+                            {r.started && r.connectedHumans === 0 && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300">paused</span>
+                            )}
+                            <span className={`text-xs ${r.started ? 'text-rose-600' : 'text-emerald-600'}`}>
+                              {r.started ? 'spectate' : 'join'}
+                            </span>
                           </span>
                         </button>
                         {selected && (

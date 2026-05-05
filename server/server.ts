@@ -42,6 +42,22 @@ interface Room {
   aiTimer?: NodeJS.Timeout;
   lastActivityAt: number;   // ms timestamp of last meaningful activity
   createdAt: number;
+  abandonedAt?: number;     // when the last human disconnected from an in-progress game
+}
+
+const ABANDON_GRACE_MS = 60 * 1000;
+const hasConnectedHuman = (r: Room) => r.players.some(p => !p.isAi && p.ws !== null);
+function sweepAbandoned() {
+  const now = Date.now();
+  for (const [code, room] of rooms) {
+    if (!room.abandonedAt || !room.state) continue;
+    if (hasConnectedHuman(room)) { room.abandonedAt = undefined; continue; }
+    if (now - room.abandonedAt >= ABANDON_GRACE_MS) {
+      if (room.aiTimer) clearTimeout(room.aiTimer);
+      for (const s of room.spectators) { try { s.close(); } catch { /* ignore */ } }
+      rooms.delete(code);
+    }
+  }
 }
 
 const rooms = new Map<string, Room>();
@@ -271,6 +287,8 @@ wss.on('connection', ws => {
     let msg: any;
     try { msg = JSON.parse(raw.toString()); } catch { return err(ws, 'Bad JSON'); }
 
+    sweepAbandoned();
+
     // Touch the room's last-activity timestamp for any incoming message tied to a room.
     const ref = socketToRoom.get(ws);
     if (ref) {
@@ -453,6 +471,7 @@ wss.on('connection', ws => {
           code: r.code,
           host: r.players[r.hostId]?.name ?? '?',
           playerCount: r.players.length,
+          connectedHumans: r.players.filter(p => !p.isAi && p.ws !== null).length,
           maxPlayers: MAX_PLAYERS,
           started: r.state !== null,
         }));
@@ -492,9 +511,9 @@ wss.on('connection', ws => {
     }
     const player = room.players[ref.id];
     if (player) player.ws = null;
-    // Keep the room alive on disconnect — the TTL sweep will clean it up if it stays idle.
-    // Auto-deleting here would erase a freshly-created room the moment the host's
-    // connection blips before friends can join.
+    if (room.state && !hasConnectedHuman(room) && !room.abandonedAt) {
+      room.abandonedAt = Date.now();
+    }
     broadcast(room);
   });
 });

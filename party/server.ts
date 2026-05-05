@@ -42,6 +42,7 @@ interface Room {
   aiTimer?: ReturnType<typeof setTimeout>;
   lastActivityAt: number;
   createdAt: number;
+  abandonedAt?: number;  // timestamp when an in-progress game lost its last connected human
 }
 
 interface ConnState {
@@ -51,6 +52,7 @@ interface ConnState {
 }
 
 const ROOM_TTL_MS = 30 * 60 * 1000;
+const ABANDON_GRACE_MS = 60 * 1000;  // an in-progress game with no connected humans is ended after this
 
 function makeToken(): string {
   return crypto.randomUUID().replace(/-/g, '');
@@ -93,6 +95,33 @@ export default class GameServer implements Party.Server {
       createdAt: r.createdAt,
     }));
     this.party.storage.put('rooms', dump).catch(e => console.error('persist failed:', e));
+  }
+
+  // True if any human player currently has an open connection.
+  hasConnectedHuman(room: Room): boolean {
+    return room.players.some(p => !p.isAi && p.conn !== null);
+  }
+
+  // Lazy cleanup — runs at the top of every message handler.
+  // PartyKit DOs hibernate when no connections are open, which kills setTimeout.
+  // Instead we stamp abandonedAt on disconnect and check elapsed time at next activity.
+  sweepAbandoned() {
+    const now = Date.now();
+    let dirty = false;
+    for (const [code, room] of this.rooms) {
+      if (!room.abandonedAt || !room.state) continue;
+      if (this.hasConnectedHuman(room)) {
+        room.abandonedAt = undefined;
+        continue;
+      }
+      if (now - room.abandonedAt >= ABANDON_GRACE_MS) {
+        if (room.aiTimer) clearTimeout(room.aiTimer);
+        for (const s of room.spectators) { try { s.close(); } catch { /* ignore */ } }
+        this.rooms.delete(code);
+        dirty = true;
+      }
+    }
+    if (dirty) this.persist();
   }
 
   makeCode(): string {
@@ -227,6 +256,9 @@ export default class GameServer implements Party.Server {
     let msg: any;
     try { msg = JSON.parse(message); } catch { return this.err(sender, 'Bad JSON'); }
 
+    // Lazy cleanup: end abandoned in-progress games whose grace period has elapsed.
+    this.sweepAbandoned();
+
     // Touch activity timestamp on the connection's room.
     const senderState = sender.state as ConnState | null;
     if (senderState) {
@@ -267,6 +299,7 @@ export default class GameServer implements Party.Server {
         const name = String(msg.name ?? '').slice(0, 24).trim() || `Player ${id + 1}`;
         const token = makeToken();
         room.players.push({ id, name, conn: sender, token, isAi: false });
+        room.abandonedAt = undefined;
         sender.setState({ code, id, spectator: false } satisfies ConnState);
         this.send(sender, { t: 'SESSION', code, id, token });
         this.broadcast(room);
@@ -285,6 +318,7 @@ export default class GameServer implements Party.Server {
           try { player.conn.close(); } catch { /* ignore */ }
         }
         player.conn = sender;
+        room.abandonedAt = undefined;
         sender.setState({ code, id: player.id, spectator: false } satisfies ConnState);
         this.send(sender, { t: 'SESSION', code, id: player.id, token });
         this.broadcast(room);
@@ -393,6 +427,7 @@ export default class GameServer implements Party.Server {
           code: r.code,
           host: r.players[r.hostId]?.name ?? '?',
           playerCount: r.players.length,
+          connectedHumans: r.players.filter(p => !p.isAi && p.conn !== null).length,
           maxPlayers: MAX_PLAYERS,
           started: r.state !== null,
         }));
@@ -429,9 +464,11 @@ export default class GameServer implements Party.Server {
     }
     const player = room.players[ref.id];
     if (player) player.conn = null;
-    // Don't delete the room on disconnect — a temporary network blip or laptop sleep
-    // would otherwise erase a freshly-created room before friends can join. The room
-    // will be cleaned up on the next cold start if it stays inactive for ROOM_TTL_MS.
+    // If the game is in progress and no humans are connected anymore, start the abandon clock.
+    // The lazy sweep will end the room ~60s later if nobody returns.
+    if (room.state && !this.hasConnectedHuman(room) && !room.abandonedAt) {
+      room.abandonedAt = Date.now();
+    }
     this.broadcast(room);
     this.persist();
   }
