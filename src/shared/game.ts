@@ -603,7 +603,15 @@ export function reducer(state: GameState, action: Action): GameState {
       const p = state.players[state.current];
       const src = activeSource(p, state.deck.length === 0);
       if (src !== 'faceDown') return state;
-      const card = p.faceDown.find(c => c.id === action.id);
+      let card = p.faceDown.find(c => c.id === action.id);
+      if (!card) {
+        // Network mode: redaction replaces face-down card ids with placeholders shaped
+        // `fd-{playerId}-{index}` (so even the owner can't deduce their own cards from
+        // the id). When the client clicks one, the dispatched id is the placeholder —
+        // the server's real state still uses the underlying card ids. Resolve by index.
+        const m = /^fd-\d+-(\d+)$/.exec(action.id);
+        if (m) card = p.faceDown[Number(m[1])];
+      }
       if (!card) return state;
       return { ...state, phase: 'flipFaceDown', flippedCard: card };
     }
