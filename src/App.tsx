@@ -1485,8 +1485,8 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
 
   return (
     <LayoutGroup>
-      <div className="flex flex-col lg:flex-row h-full">
-        <div className="flex-1 p-3 sm:p-4 pt-14 flex flex-col gap-3 sm:gap-4 lg:gap-2 min-w-0">
+      <div className="flex flex-col lg:flex-row min-h-full lg:h-screen lg:overflow-hidden">
+        <div className="flex-1 p-3 sm:p-4 pt-14 flex flex-col gap-3 sm:gap-4 lg:gap-2 min-w-0 lg:min-h-0">
           <StatusBar state={state} viewerId={viewerId} isMyTurn={isMyTurn} />
           {/* Player tiles + center piles. Linear stack on small screens (turn-ordered);
               circular table layout on lg+ so the viewer can see who's next at a glance. */}
