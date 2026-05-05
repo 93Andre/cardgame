@@ -300,57 +300,74 @@ function HandStack({ count }: { count: number }) {
   );
 }
 
-function PlayerArea({ player, isCurrent, isViewer, isNext, faceDownClickable, onFaceDownClick, emotes,
+function PlayerArea({ player, isCurrent, isViewer, compact, faceDownClickable, onFaceDownClick, emotes,
   faceUpClickable, onFaceUpClick, selectedFaceUpIds }: {
-  player: Player; isCurrent: boolean; isViewer: boolean; isNext?: boolean;
+  player: Player; isCurrent: boolean; isViewer: boolean; compact?: boolean;
   faceDownClickable?: boolean; onFaceDownClick?: (id: string) => void;
   faceUpClickable?: boolean; onFaceUpClick?: (id: string) => void;
   selectedFaceUpIds?: Set<string>;
   emotes?: { id: string; playerId: number; emoji: string }[];
 }) {
   const c = colorFor(player.id);
+  // Compact mode: tighter padding, smaller text, face-up + face-down rendered side-by-side
+  // in a single row so the tile stays short enough to fit around the table on mobile.
   return (
-    <div className={`relative p-2 sm:p-3 rounded-lg border-2 ${isCurrent ? `${c.border} ${c.bg} ring-2 ${c.ring}` : isNext && !player.out ? 'border-emerald-300 bg-emerald-50/60 border-dashed' : 'border-gray-300 bg-white/60'} flex flex-col gap-2 min-w-0`}>
-      {isNext && !isCurrent && !player.out && (
-        <motion.span
-          animate={{ opacity: [0.5, 1, 0.5] }}
-          transition={{ duration: 1.6, repeat: Infinity }}
-          className="absolute -top-2 -right-2 px-1.5 py-0.5 bg-emerald-500 text-white text-[10px] font-bold rounded-full shadow"
-        >↪ Next</motion.span>
-      )}
-      <div className="flex items-center justify-between gap-2">
-        <span className="font-semibold flex items-center gap-1.5 truncate">
+    <div className={`relative ${compact ? 'p-1.5' : 'p-2 sm:p-3'} rounded-lg border-2 ${isCurrent ? `${c.border} ${c.bg} ring-2 ${c.ring}` : 'border-gray-300 bg-white/60'} flex flex-col ${compact ? 'gap-1' : 'gap-2'} min-w-0`}>
+      <div className={`flex items-center justify-between ${compact ? 'gap-1' : 'gap-2'}`}>
+        <span className={`font-semibold flex items-center gap-1 truncate ${compact ? 'text-[11px]' : ''}`}>
           <span className={`inline-block w-2 h-2 rounded-full ${c.dot}`} />
           <span className="truncate">{player.name}</span>
-          {player.isAi && <span className="text-[10px] px-1 py-0.5 bg-gray-200 rounded">AI</span>}
-          {isViewer && <span className="text-[10px] text-emerald-700">(you)</span>}
+          {!compact && player.isAi && <span className="text-[10px] px-1 py-0.5 bg-gray-200 rounded">AI</span>}
+          {!compact && isViewer && <span className="text-[10px] text-emerald-700">(you)</span>}
         </span>
-        <span className="flex items-center gap-1.5 whitespace-nowrap">
+        <span className="flex items-center gap-1 whitespace-nowrap">
           <HandStack count={player.hand.length} />
           {player.out && player.finishPos !== null && <RankMedal pos={player.finishPos} />}
         </span>
       </div>
-      <div className="flex gap-1 flex-wrap">
-        {player.faceUp.map(c2 => (
-          <AnimatedCard
-            key={c2.id} layoutId={c2.id} card={c2} small magnifyOnHover
-            selected={selectedFaceUpIds?.has(c2.id)}
-            onClick={faceUpClickable && onFaceUpClick ? () => onFaceUpClick(c2.id) : undefined}
-          />
-        ))}
-        {player.faceUp.length === 0 && player.faceDown.length > 0 && (
-          <span className="text-[10px] text-gray-500 italic">face-up empty</span>
-        )}
-      </div>
-      <div className="flex gap-1">
-        {player.faceDown.map(c2 => (
-          <CardFace
-            key={c2.id} small hidden
-            onClick={faceDownClickable && onFaceDownClick ? () => onFaceDownClick(c2.id) : undefined}
-          />
-        ))}
-        {player.faceDown.length === 0 && <span className="text-[10px] text-gray-500 italic">face-down empty</span>}
-      </div>
+      {compact ? (
+        // Single combined row: face-up small followed by face-down placeholders
+        <div className="flex gap-0.5 items-center flex-wrap">
+          {player.faceUp.map(c2 => (
+            <AnimatedCard
+              key={c2.id} layoutId={c2.id} card={c2} small magnifyOnHover
+              selected={selectedFaceUpIds?.has(c2.id)}
+              onClick={faceUpClickable && onFaceUpClick ? () => onFaceUpClick(c2.id) : undefined}
+            />
+          ))}
+          {player.faceDown.map(c2 => (
+            <CardFace
+              key={c2.id} small hidden
+              onClick={faceDownClickable && onFaceDownClick ? () => onFaceDownClick(c2.id) : undefined}
+            />
+          ))}
+          {player.faceUp.length === 0 && player.faceDown.length === 0 && <span className="text-[9px] text-gray-500 italic">no cards</span>}
+        </div>
+      ) : (
+        <>
+          <div className="flex gap-1 flex-wrap">
+            {player.faceUp.map(c2 => (
+              <AnimatedCard
+                key={c2.id} layoutId={c2.id} card={c2} small magnifyOnHover
+                selected={selectedFaceUpIds?.has(c2.id)}
+                onClick={faceUpClickable && onFaceUpClick ? () => onFaceUpClick(c2.id) : undefined}
+              />
+            ))}
+            {player.faceUp.length === 0 && player.faceDown.length > 0 && (
+              <span className="text-[10px] text-gray-500 italic">face-up empty</span>
+            )}
+          </div>
+          <div className="flex gap-1">
+            {player.faceDown.map(c2 => (
+              <CardFace
+                key={c2.id} small hidden
+                onClick={faceDownClickable && onFaceDownClick ? () => onFaceDownClick(c2.id) : undefined}
+              />
+            ))}
+            {player.faceDown.length === 0 && <span className="text-[10px] text-gray-500 italic">face-down empty</span>}
+          </div>
+        </>
+      )}
       {/* floating emotes */}
       <AnimatePresence>
         {(emotes ?? []).filter(e => e.playerId === player.id).slice(-1).map(e => (
@@ -379,27 +396,38 @@ function CircularTable({ players, current, viewer, direction, renderPlayer, cent
   current: number;
   viewer: number;
   direction: 1 | -1;
-  renderPlayer: (p: Player, isNext: boolean) => React.ReactNode;
+  renderPlayer: (p: Player, isNext: boolean, compact: boolean) => React.ReactNode;
   centerContent: React.ReactNode;
 }) {
   const n = players.length;
   const nextIdx = nextActiveIndex(players, current, direction);
   const safeViewer = viewer >= 0 ? viewer : current;
-  // Tile width scales with viewport but stays inside reasonable bounds.
-  const tileWidth = 'clamp(120px, 28vw, 220px)';
+  // Detect narrow viewports to switch to a taller container + compact tiles.
+  const [narrow, setNarrow] = useState(typeof window !== 'undefined' ? window.innerWidth < 720 : false);
+  useEffect(() => {
+    const onResize = () => setNarrow(window.innerWidth < 720);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  const tileWidth = narrow ? 'clamp(110px, 30vw, 180px)' : 'clamp(140px, 22vw, 220px)';
+  const aspectRatio = narrow ? '4 / 5' : '5 / 4';
+  const minHeight = narrow ? 540 : 420;
+  // Slightly tighter perimeter on small player counts so tiles don't crowd the edge,
+  // and a slightly larger ry on narrow viewports to push tiles further from the centerpiece.
+  const rx = n <= 3 ? 0.34 : 0.40;
+  const ry = narrow ? (n <= 3 ? 0.40 : 0.42) : (n <= 3 ? 0.34 : 0.38);
 
   return (
     <div
       className="relative w-full mx-auto"
-      style={{ aspectRatio: '5/4', maxWidth: 900, minHeight: 420 }}
+      style={{ aspectRatio, maxWidth: 900, minHeight }}
     >
-      {/* Faint dashed table outline */}
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full pointer-events-none">
-        <ellipse cx="50" cy="50" rx="42" ry="38" fill="none" stroke="rgba(120,120,120,0.18)" strokeDasharray="1.5 1.5" strokeWidth="0.4" />
+        <ellipse cx="50" cy="50" rx="42" ry="40" fill="none" stroke="rgba(120,120,120,0.18)" strokeDasharray="1.5 1.5" strokeWidth="0.4" />
       </svg>
 
-      {/* Direction glyph at top of the table */}
-      <div className="absolute left-1/2 top-2 -translate-x-1/2 text-2xl text-gray-500 select-none pointer-events-none">
+      <div className="absolute left-1/2 top-1 -translate-x-1/2 text-xl text-gray-500 select-none pointer-events-none">
         {direction === 1 ? '↻' : '↺'}
       </div>
 
@@ -407,9 +435,6 @@ function CircularTable({ players, current, viewer, direction, renderPlayer, cent
         const slot = (((p.id - safeViewer) * direction + n * n) % n);
         const baseAngle = 90 + (slot / n) * 360;
         const angle = baseAngle * Math.PI / 180;
-        // Bring the perimeter in slightly on smaller player counts so tiles don't crowd the edge.
-        const rx = n <= 3 ? 0.36 : 0.40;
-        const ry = n <= 3 ? 0.34 : 0.38;
         const xPct = 50 + Math.cos(angle) * rx * 100;
         const yPct = 50 + Math.sin(angle) * ry * 100;
         return (
@@ -422,7 +447,7 @@ function CircularTable({ players, current, viewer, direction, renderPlayer, cent
               width: tileWidth,
             }}
           >
-            {renderPlayer(p, p.id === nextIdx)}
+            {renderPlayer(p, p.id === nextIdx, narrow)}
           </div>
         );
       })}
@@ -1290,7 +1315,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
           {/* Player tiles + center piles. Linear stack on small screens (turn-ordered);
               circular table layout on lg+ so the viewer can see who's next at a glance. */}
           {(() => {
-            const renderPlayerTile = (pp: Player, isNext: boolean) => {
+            const renderPlayerTile = (pp: Player, _isNext: boolean, compact: boolean) => {
               const isOwnArea = pp.id === state.current && isMyTurn;
               const chainEligible = isOwnArea && src === 'hand' && state.deck.length === 0;
               const selectedFaceUpIds = isOwnArea ? new Set(state.selected.filter(id => pp.faceUp.some(c => c.id === id))) : undefined;
@@ -1299,7 +1324,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
                   player={pp}
                   isCurrent={pp.id === state.current}
                   isViewer={pp.id === viewer && !isSpectator}
-                  isNext={isNext}
+                  compact={compact}
                   faceDownClickable={isOwnArea && src === 'faceDown'}
                   onFaceDownClick={(id) => dispatch({ type: 'FLIP_FACEDOWN', id })}
                   faceUpClickable={chainEligible}
