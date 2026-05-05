@@ -385,26 +385,31 @@ function CircularTable({ players, current, viewer, direction, renderPlayer, cent
   const n = players.length;
   const nextIdx = nextActiveIndex(players, current, direction);
   const safeViewer = viewer >= 0 ? viewer : current;
+  // Tile width scales with viewport but stays inside reasonable bounds.
+  const tileWidth = 'clamp(120px, 28vw, 220px)';
 
   return (
-    <div className="relative w-full mx-auto" style={{ aspectRatio: '5/3', maxWidth: 900, minHeight: 360 }}>
+    <div
+      className="relative w-full mx-auto"
+      style={{ aspectRatio: '5/4', maxWidth: 900, minHeight: 420 }}
+    >
       {/* Faint dashed table outline */}
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full pointer-events-none">
         <ellipse cx="50" cy="50" rx="42" ry="38" fill="none" stroke="rgba(120,120,120,0.18)" strokeDasharray="1.5 1.5" strokeWidth="0.4" />
       </svg>
 
-      {/* Curved direction arrow at the very top of the ellipse */}
+      {/* Direction glyph at top of the table */}
       <div className="absolute left-1/2 top-2 -translate-x-1/2 text-2xl text-gray-500 select-none pointer-events-none">
         {direction === 1 ? '↻' : '↺'}
       </div>
 
-      {/* Players arranged around the perimeter */}
       {players.map(p => {
-        // Slot 0 = viewer (bottom). Slots 1..n-1 fan out in the active turn direction.
         const slot = (((p.id - safeViewer) * direction + n * n) % n);
-        const baseAngle = 90 + (slot / n) * 360;     // degrees, 90° = bottom of the ellipse
+        const baseAngle = 90 + (slot / n) * 360;
         const angle = baseAngle * Math.PI / 180;
-        const rx = 0.40, ry = 0.36;                  // % of container half-extents
+        // Bring the perimeter in slightly on smaller player counts so tiles don't crowd the edge.
+        const rx = n <= 3 ? 0.36 : 0.40;
+        const ry = n <= 3 ? 0.34 : 0.38;
         const xPct = 50 + Math.cos(angle) * rx * 100;
         const yPct = 50 + Math.sin(angle) * ry * 100;
         return (
@@ -414,7 +419,7 @@ function CircularTable({ players, current, viewer, direction, renderPlayer, cent
             style={{
               left: `${xPct}%`, top: `${yPct}%`,
               transform: 'translate(-50%, -50%)',
-              width: 'min(220px, 28%)', minWidth: 180,
+              width: tileWidth,
             }}
           >
             {renderPlayer(p, p.id === nextIdx)}
@@ -422,7 +427,6 @@ function CircularTable({ players, current, viewer, direction, renderPlayer, cent
         );
       })}
 
-      {/* Centerpiece */}
       <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
         {centerContent}
       </div>
@@ -1307,38 +1311,16 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
             };
             const center = <CenterPiles deckCount={state.deck.length} pile={state.pile} burnedCount={state.burnedCount} lastBurnSize={state.lastBurnSize} />;
 
-            // Sort by turn order from viewer (slot 0 = viewer, then turn-order onwards).
             const safeViewer = viewer >= 0 ? viewer : state.current;
-            const n = state.players.length;
-            const nextIdx = nextActiveIndex(state.players, state.current, state.direction);
-            const sortedPlayers = [...state.players].sort((a, b) =>
-              (((a.id - safeViewer) * state.direction + n * n) % n)
-              - (((b.id - safeViewer) * state.direction + n * n) % n)
-            );
-
             return (
-              <>
-                {/* Mobile / md: turn-ordered stack with the centerpiece below */}
-                <div className="lg:hidden">
-                  <div className="grid gap-2 sm:gap-3 grid-cols-1 sm:grid-cols-2">
-                    {sortedPlayers.map(pp => (
-                      <div key={pp.id}>{renderPlayerTile(pp, pp.id === nextIdx)}</div>
-                    ))}
-                  </div>
-                  <div className="my-3 flex justify-center">{center}</div>
-                </div>
-                {/* Desktop lg+: circular table */}
-                <div className="hidden lg:block">
-                  <CircularTable
-                    players={state.players}
-                    current={state.current}
-                    viewer={safeViewer}
-                    direction={state.direction}
-                    renderPlayer={renderPlayerTile}
-                    centerContent={center}
-                  />
-                </div>
-              </>
+              <CircularTable
+                players={state.players}
+                current={state.current}
+                viewer={safeViewer}
+                direction={state.direction}
+                renderPlayer={renderPlayerTile}
+                centerContent={center}
+              />
             );
           })()}
 
