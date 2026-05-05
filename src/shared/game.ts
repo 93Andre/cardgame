@@ -57,6 +57,8 @@ export interface GameState {
   mode: GameMode;
   burnedCount: number;     // total cards burned across the whole game
   lastBurnSize: number;    // size of the most recent burn (for visual flourish), 0 = no recent burn
+  // House rule: when a player picks up the pile, one random card is revealed to everyone for a few seconds.
+  revealedPickup: { playerId: number; card: Card; ts: number } | null;
 }
 
 export type Action =
@@ -232,6 +234,7 @@ export function initialState(): GameState {
     mode: 'classic',
     burnedCount: 0,
     lastBurnSize: 0,
+    revealedPickup: null,
   };
 }
 
@@ -491,11 +494,15 @@ export function reducer(state: GameState, action: Action): GameState {
       if (state.pile.length === 0) return state;
       const players = state.players.slice();
       const p = { ...players[state.current] };
-      p.hand = [...p.hand, ...state.pile.map(e => e.card)];
+      const pickedCards = state.pile.map(e => e.card);
+      // House rule: reveal one random card from the pickup to all players.
+      const reveal = pickedCards[Math.floor(Math.random() * pickedCards.length)];
+      p.hand = [...p.hand, ...pickedCards];
       players[state.current] = p;
-      const log = logLine(state, `${p.name} picked up the pile (${state.pile.length} cards).`);
+      const log = logLine(state, `${p.name} picked up the pile (${pickedCards.length} cards). Revealed: ${reveal.rank}${reveal.suit}.`);
       const next: GameState = {
         ...state, players, pile: [], selected: [], sevenRestriction: false, log, flippedCard: null,
+        revealedPickup: { playerId: state.current, card: reveal, ts: Date.now() },
       };
       const direction = state.direction;
       const current = nextActiveIndex(players, state.current, direction);
@@ -533,12 +540,15 @@ export function reducer(state: GameState, action: Action): GameState {
         const picked = [...state.pile.map(e => e.card), card];
         const np2: Player = { ...np, hand: [...np.hand, ...picked] };
         players[state.current] = np2;
+        // Reveal one card to everyone (the flipped face-down card, since it was the cause).
+        const reveal = card;
         const log = logLine(state, `${p.name} flipped ${card.rank}${card.suit} — illegal! Picks up pile (${picked.length}).`);
         const direction = state.direction;
         const current = nextActiveIndex(players, state.current, direction);
         return {
           ...state, players, pile: [], flippedCard: null, selected: [], sevenRestriction: false,
           phase: 'pass', current, log, lastWasMine: false,
+          revealedPickup: { playerId: state.current, card: reveal, ts: Date.now() },
         };
       }
     }

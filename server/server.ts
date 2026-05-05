@@ -237,8 +237,14 @@ function scheduleAi(room: Room) {
   if (aiId === null) return;
 
   const target = aiId;
-  // Cuts get a faster reaction; other AI moves are slower to feel natural.
   const isCut = room.state.phase === 'play' && room.state.current !== target;
+  // If a reveal-on-pickup is on screen, delay AI so the reveal can be seen.
+  const REVEAL_MS = 3000;
+  const revealRemaining = room.state.revealedPickup
+    ? Math.max(0, REVEAL_MS - (Date.now() - room.state.revealedPickup.ts))
+    : 0;
+  const baseDelay = isCut ? 350 : 700;
+  const delay = Math.max(baseDelay, revealRemaining);
   room.aiTimer = setTimeout(() => {
     room.aiTimer = undefined;
     if (!room.state) return;
@@ -248,7 +254,7 @@ function scheduleAi(room: Room) {
     persist();
     broadcast(room);
     scheduleAi(room);
-  }, isCut ? 350 : 700);
+  }, delay);
 }
 
 const PORT = Number(process.env.PORT ?? 8787);

@@ -29,6 +29,8 @@ type SoundName = 'play' | 'pickup' | 'burn' | 'reset' | 'skip' | 'reverse' | 'se
 
 class SoundEngine {
   private ctx: AudioContext | null = null;
+  private master: GainNode | null = null;     // master gain (volume) → compressor → destination
+  private compressor: DynamicsCompressorNode | null = null;
   private installedHandlers = false;
   private samples = new Map<string, HTMLAudioElement>();
   muted: boolean = (() => {
@@ -41,15 +43,31 @@ class SoundEngine {
   private ensure() {
     if (!this.ctx) {
       const Ctor = (window as any).AudioContext || (window as any).webkitAudioContext;
-      if (Ctor) this.ctx = new Ctor();
+      if (Ctor) {
+        const ctx: AudioContext = new Ctor();
+        this.ctx = ctx;
+        // Build a stable graph: each tone → master gain → compressor → destination.
+        // The compressor prevents clipping from overlapping tones (which sounds like sounds
+        // "cutting off"); the master gain holds the user's volume preference in one place.
+        const comp = ctx.createDynamicsCompressor();
+        comp.threshold.value = -14;
+        comp.knee.value = 6;
+        comp.ratio.value = 12;
+        comp.attack.value = 0.003;
+        comp.release.value = 0.12;
+        const master = ctx.createGain();
+        master.gain.value = this.volume;
+        master.connect(comp);
+        comp.connect(ctx.destination);
+        this.compressor = comp;
+        this.master = master;
+      }
     }
     if (this.ctx?.state === 'suspended') {
       this.ctx.resume().catch(() => {});
     }
     if (!this.installedHandlers && typeof window !== 'undefined') {
       this.installedHandlers = true;
-      // Browsers suspend the AudioContext when a tab loses focus, when the system audio
-      // device changes, or after extended idle. Re-resume on any signal that the user is back.
       const resume = () => { if (this.ctx?.state === 'suspended') this.ctx.resume().catch(() => {}); };
       document.addEventListener('visibilitychange', resume);
       window.addEventListener('focus', resume);
@@ -66,40 +84,50 @@ class SoundEngine {
   setVolume(v: number) {
     this.volume = Math.max(0, Math.min(1, v));
     try { localStorage.setItem('ph_vol', String(this.volume)); } catch { /* ignore */ }
+    if (this.master && this.ctx) {
+      // Smoothly retarget the master gain rather than jumping (avoids zipper noise).
+      this.master.gain.setTargetAtTime(this.volume, this.ctx.currentTime, 0.02);
+    }
   }
   private tone(freq: number, dur: number, type: OscillatorType = 'sine', gain = 0.15, delay = 0) {
     if (this.muted || this.volume < 0.01) return;
     const ctx = this.ensure();
-    if (!ctx || ctx.state === 'closed') return;
+    if (!ctx || ctx.state === 'closed' || !this.master) return;
     try {
       const t0 = ctx.currentTime + delay;
       const osc = ctx.createOscillator();
       const g = ctx.createGain();
       osc.type = type;
       osc.frequency.setValueAtTime(freq, t0);
-      const target = Math.max(0.001, gain * this.volume);
-      g.gain.setValueAtTime(0.0001, t0);
-      g.gain.linearRampToValueAtTime(target, t0 + 0.01);
-      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-      osc.connect(g).connect(ctx.destination);
+      // Linear envelope only — exponential ramps to near-zero made every tone *sound* cut off
+      // because the audible portion ended very early. Linear gives a clean, full fade.
+      const peak = gain;
+      const attack = 0.005;
+      g.gain.setValueAtTime(0, t0);
+      g.gain.linearRampToValueAtTime(peak, t0 + attack);
+      g.gain.linearRampToValueAtTime(0, t0 + dur);
+      osc.connect(g).connect(this.master);
       osc.start(t0);
       osc.stop(t0 + dur + 0.05);
-    } catch { /* audio engine occasionally throws under load — drop the sound silently */ }
+      // Free graph nodes after they finish so a long session doesn't accumulate them.
+      osc.onended = () => { try { osc.disconnect(); g.disconnect(); } catch { /* ignore */ } };
+    } catch { /* engine occasionally throws under load — drop silently */ }
   }
   private noiseBurst(dur: number, gain = 0.2) {
     if (this.muted || this.volume < 0.01) return;
     const ctx = this.ensure();
-    if (!ctx || ctx.state === 'closed') return;
+    if (!ctx || ctx.state === 'closed' || !this.master) return;
     try {
       const buf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * dur), ctx.sampleRate);
       const data = buf.getChannelData(0);
       for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
       const src = ctx.createBufferSource();
       const g = ctx.createGain();
-      g.gain.value = Math.max(0.001, gain * this.volume);
+      g.gain.value = gain;
       src.buffer = buf;
-      src.connect(g).connect(ctx.destination);
+      src.connect(g).connect(this.master);
       src.start();
+      src.onended = () => { try { src.disconnect(); g.disconnect(); } catch { /* ignore */ } };
     } catch { /* ignore */ }
   }
   play(name: SoundName) {
@@ -637,6 +665,45 @@ function useDealAnimationGate(state: GameState | null): { dealing: boolean; fini
   return { dealing, finishDeal: () => setDealing(false) };
 }
 
+/* ============== Reveal-on-pickup overlay ============== */
+
+const REVEAL_DURATION_MS = 3000;
+
+function RevealOverlay({ playerName, card }: { playerName: string; card: Card }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.7, y: 30 }}
+      animate={{ opacity: 1, scale: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.7, y: 30 }}
+      transition={{ type: 'spring', stiffness: 240, damping: 22 }}
+      className="fixed inset-x-0 top-20 z-30 flex items-center justify-center pointer-events-none"
+    >
+      <div className="bg-stone-900/85 text-white rounded-xl px-5 py-3 shadow-xl flex items-center gap-3">
+        <div className="text-sm">
+          <div className="font-semibold">{playerName} picked up the pile</div>
+          <div className="text-xs text-stone-300">Revealed card:</div>
+        </div>
+        <div className="scale-90"><CardFace card={card} /></div>
+      </div>
+    </motion.div>
+  );
+}
+
+function useRevealOverlay(state: GameState | null) {
+  const [shown, setShown] = useState<{ name: string; card: Card; ts: number } | null>(null);
+  useEffect(() => {
+    if (!state?.revealedPickup) return;
+    const r = state.revealedPickup;
+    // Skip if we already displayed this exact reveal.
+    if (shown?.ts === r.ts) return;
+    setShown({ name: state.players[r.playerId]?.name ?? 'Player', card: r.card, ts: r.ts });
+    const t = setTimeout(() => setShown(s => (s?.ts === r.ts ? null : s)), REVEAL_DURATION_MS);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state?.revealedPickup?.ts]);
+  return shown;
+}
+
 /* ============== Phase screens ============== */
 
 function HowToPlay() {
@@ -949,12 +1016,15 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote }: {
               <div className="flex gap-2 flex-wrap">
                 <LayoutGroup>
                   {displayCards.map(c => {
-                    const wouldBeOk = canPlayCards([c], state.pile, state.sevenRestriction);
+                    // Only compute legality (dim) on the viewer's own turn — otherwise the visual
+                    // would flicker every time someone else changes the pile, even though the
+                    // viewer can't act on that information.
+                    const wouldBeOk = isMyTurn ? canPlayCards([c], state.pile, state.sevenRestriction) : true;
                     return (
                       <AnimatedCard
                         key={c.id} layoutId={c.id} card={c}
                         selected={state.selected.includes(c.id)}
-                        dim={!wouldBeOk && state.selected.length === 0}
+                        dim={isMyTurn && !wouldBeOk && state.selected.length === 0}
                         onClick={isMyTurn ? () => dispatch({ type: 'TOGGLE_SELECT', id: c.id }) : undefined}
                       />
                     );
@@ -1249,6 +1319,18 @@ function LocalGame({ humans, ais, onExit }: { humans: number; ais: number; onExi
   const { toasts } = useEventEffects(state.log, state.players.length === 0);
   const aiTimer = useRef<number | null>(null);
   const { dealing, finishDeal } = useDealAnimationGate(state);
+  const reveal = useRevealOverlay(state);
+
+  // Local-mode viewer: the most recent HUMAN player. AI turns don't shift this — so
+  // when an AI plays, the device keeps showing the human's hand (or hides nothing of theirs).
+  const [localViewerId, setLocalViewerId] = useState<number>(() =>
+    Math.max(0, init.players.findIndex(p => !p.isAi)),
+  );
+  useEffect(() => {
+    if (state.phase === 'play' && !state.players[state.current]?.isAi) {
+      setLocalViewerId(state.current);
+    }
+  }, [state.phase, state.current, state.players]);
 
   // Per-pass skipped-by-human set (cleared on every state.pile change so each new pile event re-prompts).
   const [skippedHumans, setSkippedHumans] = useState<Set<number>>(new Set());
@@ -1293,10 +1375,15 @@ function LocalGame({ humans, ais, onExit }: { humans: number; ais: number; onExi
     }
     if (aiId === null) return;
     const isCut = state.phase === 'play' && state.current !== aiId;
+    // Hold the AI for the rest of the reveal window so humans can absorb the revealed card.
+    const revealDelay = state.revealedPickup
+      ? Math.max(0, REVEAL_DURATION_MS - (Date.now() - state.revealedPickup.ts))
+      : 0;
+    const baseDelay = isCut ? 350 : 700;
     aiTimer.current = window.setTimeout(() => {
       const action = aiPickAction(state, aiId!);
       if (action) dispatch(action);
-    }, isCut ? 350 : 700);
+    }, Math.max(baseDelay, revealDelay));
     return () => { if (aiTimer.current) clearTimeout(aiTimer.current); };
   }, [state, aiCutterPending]);
 
@@ -1347,14 +1434,12 @@ function LocalGame({ humans, ais, onExit }: { humans: number; ais: number; onExi
     switch (state.phase) {
       case 'swap': body = <SwapScreen state={state} dispatch={dispatch} viewerId={null} />; break;
       case 'pass':
-        // If we're about to auto-skip the pass screen, render the play view instead so the user
-        // never sees the "Pass to AI…" screen flicker.
         body = shouldSkipPass
-          ? <PlayScreen state={state} dispatch={dispatch} viewerId={null} />
+          ? <PlayScreen state={state} dispatch={dispatch} viewerId={localViewerId} />
           : <PassScreen state={state} dispatch={dispatch} />;
         break;
-      case 'play': body = <PlayScreen state={state} dispatch={dispatch} viewerId={null} />; break;
-      case 'flipFaceDown': body = <FlipScreen state={state} dispatch={dispatch} viewerId={null} />; break;
+      case 'play': body = <PlayScreen state={state} dispatch={dispatch} viewerId={localViewerId} />; break;
+      case 'flipFaceDown': body = <FlipScreen state={state} dispatch={dispatch} viewerId={localViewerId} />; break;
       case 'end': body = <EndScreen state={state} onPlayAgain={restart} />; break;
       default: body = null;
     }
@@ -1368,6 +1453,7 @@ function LocalGame({ humans, ais, onExit }: { humans: number; ais: number; onExi
       {body}
       <AnimatePresence>
         {dealing && <DealAnimation playerNames={state.players.map(p => p.name)} onComplete={finishDeal} />}
+        {reveal && <RevealOverlay key={reveal.ts} playerName={reveal.name} card={reveal.card} />}
       </AnimatePresence>
     </>
   );
@@ -1379,6 +1465,7 @@ function NetworkGame({ onExit, prefilledCode }: { onExit: () => void; prefilledC
   const conn = useNetwork(true);
   const { toasts } = useEventEffects(conn.state?.log ?? [], conn.lobby?.code);
   const { dealing, finishDeal } = useDealAnimationGate(conn.state);
+  const reveal = useRevealOverlay(conn.state);
 
   const dispatch = (action: Action) => conn.send({ t: 'ACT', action });
 
@@ -1427,6 +1514,7 @@ function NetworkGame({ onExit, prefilledCode }: { onExit: () => void; prefilledC
       {body}
       <AnimatePresence>
         {dealing && conn.state && <DealAnimation playerNames={conn.state.players.map(p => p.name)} onComplete={finishDeal} />}
+        {reveal && <RevealOverlay key={reveal.ts} playerName={reveal.name} card={reveal.card} />}
       </AnimatePresence>
     </>
   );
