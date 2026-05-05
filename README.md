@@ -34,32 +34,28 @@ VITE_WS_URL=wss://<your-ws-server-host>
 
 …then redeploy. The client reads it via `defaultWsUrl()` in `src/net.ts`.
 
-### WebSocket server → Fly.io
+### WebSocket server → PartyKit (free, on Cloudflare Workers)
 
-The repo includes `Dockerfile` + `fly.toml` for a one-command deploy.
+The repo includes `partykit.json` + `party/server.ts` (a port of the Node server to PartyKit's Durable Object model). Free tier covers a card-game's traffic indefinitely.
 
 ```bash
-# 1. Install flyctl
-brew install flyctl
+# 1. Login (uses GitHub OAuth)
+npx partykit login
 
-# 2. Sign in
-fly auth login
+# 2. Edit `partykit.json` — change `"name": "poophead"` to something unique to you,
+#    e.g. "poophead-93andre"
 
-# 3. First-time setup — pick a unique app name when prompted
-fly launch --copy-config --no-deploy
-# (or edit `app = "poophead-server"` in fly.toml to your unique name)
-
-# 4. Deploy
-fly deploy
+# 3. Deploy
+npx partykit deploy
 ```
 
-Your server is now at `wss://<your-app>.fly.dev`. Use that URL for `VITE_WS_URL` in Vercel.
+Your server is now at `wss://<name>.<username>.partykit.dev`. Set the **host** as `VITE_WS_URL` in Vercel (the client auto-appends `/parties/main/global`):
 
-Cost: Fly bills per-second for a tiny machine — typically ~$2–5 / month for low traffic. The `min_machines_running = 1` keeps the WS connection persistent (not auto-sleeping).
+```
+VITE_WS_URL=wss://poophead.93andre.partykit.dev
+```
 
-### Alternative WS hosts
-
-The `Dockerfile` works on any container host — Render, Railway, DigitalOcean App Platform, Hetzner, Fly. For Render, set the start command to `npx tsx server/server.ts` and disable auto-sleep on the service. The server reads `process.env.PORT` for the listen port.
+For local development, the same code runs via `npm run dev` (which uses `server/server.ts`, the Node version that's still around for fast local iteration). The PartyKit version is `party/server.ts` and shares the same `src/shared/game.ts` reducer.
 
 ## Stack
 

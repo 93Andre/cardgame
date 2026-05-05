@@ -63,8 +63,14 @@ function saveSession(s: Session | null) {
 }
 
 function defaultWsUrl(): string {
-  const fromEnv = (import.meta as any).env?.VITE_WS_URL;
-  if (fromEnv) return fromEnv as string;
+  const fromEnv = (import.meta as any).env?.VITE_WS_URL as string | undefined;
+  if (fromEnv) {
+    // PartyKit hosts WebSocket parties at /parties/<name>/<room>. If the env value is just a host,
+    // append the canonical path. If it already includes /parties/, use it verbatim.
+    if (/\/parties\//.test(fromEnv)) return fromEnv;
+    const trimmed = fromEnv.replace(/\/$/, '');
+    return `${trimmed}/parties/main/global`;
+  }
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${proto}//${location.hostname}:8787`;
 }
