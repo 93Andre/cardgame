@@ -20,6 +20,7 @@ import {
   cardsFromSource,
   cutMatches,
   newGame,
+  nextActiveIndex,
   reducer,
 } from './shared/game';
 import { useNetwork, type NetworkConn } from './net';
@@ -299,9 +300,9 @@ function HandStack({ count }: { count: number }) {
   );
 }
 
-function PlayerArea({ player, isCurrent, isViewer, faceDownClickable, onFaceDownClick, emotes,
+function PlayerArea({ player, isCurrent, isViewer, isNext, faceDownClickable, onFaceDownClick, emotes,
   faceUpClickable, onFaceUpClick, selectedFaceUpIds }: {
-  player: Player; isCurrent: boolean; isViewer: boolean;
+  player: Player; isCurrent: boolean; isViewer: boolean; isNext?: boolean;
   faceDownClickable?: boolean; onFaceDownClick?: (id: string) => void;
   faceUpClickable?: boolean; onFaceUpClick?: (id: string) => void;
   selectedFaceUpIds?: Set<string>;
@@ -309,7 +310,14 @@ function PlayerArea({ player, isCurrent, isViewer, faceDownClickable, onFaceDown
 }) {
   const c = colorFor(player.id);
   return (
-    <div className={`relative p-2 sm:p-3 rounded-lg border-2 ${isCurrent ? `${c.border} ${c.bg} ring-2 ${c.ring}` : 'border-gray-300 bg-white/60'} flex flex-col gap-2 min-w-0`}>
+    <div className={`relative p-2 sm:p-3 rounded-lg border-2 ${isCurrent ? `${c.border} ${c.bg} ring-2 ${c.ring}` : isNext && !player.out ? 'border-emerald-300 bg-emerald-50/60 border-dashed' : 'border-gray-300 bg-white/60'} flex flex-col gap-2 min-w-0`}>
+      {isNext && !isCurrent && !player.out && (
+        <motion.span
+          animate={{ opacity: [0.5, 1, 0.5] }}
+          transition={{ duration: 1.6, repeat: Infinity }}
+          className="absolute -top-2 -right-2 px-1.5 py-0.5 bg-emerald-500 text-white text-[10px] font-bold rounded-full shadow"
+        >↪ Next</motion.span>
+      )}
       <div className="flex items-center justify-between gap-2">
         <span className="font-semibold flex items-center gap-1.5 truncate">
           <span className={`inline-block w-2 h-2 rounded-full ${c.dot}`} />
@@ -358,6 +366,66 @@ function PlayerArea({ player, isCurrent, isViewer, faceDownClickable, onFaceDown
           </motion.div>
         ))}
       </AnimatePresence>
+    </div>
+  );
+}
+
+/* ============== Circular table layout ============== */
+
+// Arranges player tiles around a central pile area, with the viewer always at the bottom
+// and other players spread clockwise (or counter-clockwise) by turn order.
+function CircularTable({ players, current, viewer, direction, renderPlayer, centerContent }: {
+  players: Player[];
+  current: number;
+  viewer: number;
+  direction: 1 | -1;
+  renderPlayer: (p: Player, isNext: boolean) => React.ReactNode;
+  centerContent: React.ReactNode;
+}) {
+  const n = players.length;
+  const nextIdx = nextActiveIndex(players, current, direction);
+  const safeViewer = viewer >= 0 ? viewer : current;
+
+  return (
+    <div className="relative w-full mx-auto" style={{ aspectRatio: '5/3', maxWidth: 900, minHeight: 360 }}>
+      {/* Faint dashed table outline */}
+      <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full pointer-events-none">
+        <ellipse cx="50" cy="50" rx="42" ry="38" fill="none" stroke="rgba(120,120,120,0.18)" strokeDasharray="1.5 1.5" strokeWidth="0.4" />
+      </svg>
+
+      {/* Curved direction arrow at the very top of the ellipse */}
+      <div className="absolute left-1/2 top-2 -translate-x-1/2 text-2xl text-gray-500 select-none pointer-events-none">
+        {direction === 1 ? '↻' : '↺'}
+      </div>
+
+      {/* Players arranged around the perimeter */}
+      {players.map(p => {
+        // Slot 0 = viewer (bottom). Slots 1..n-1 fan out in the active turn direction.
+        const slot = (((p.id - safeViewer) * direction + n * n) % n);
+        const baseAngle = 90 + (slot / n) * 360;     // degrees, 90° = bottom of the ellipse
+        const angle = baseAngle * Math.PI / 180;
+        const rx = 0.40, ry = 0.36;                  // % of container half-extents
+        const xPct = 50 + Math.cos(angle) * rx * 100;
+        const yPct = 50 + Math.sin(angle) * ry * 100;
+        return (
+          <div
+            key={p.id}
+            className="absolute"
+            style={{
+              left: `${xPct}%`, top: `${yPct}%`,
+              transform: 'translate(-50%, -50%)',
+              width: 'min(220px, 28%)', minWidth: 180,
+            }}
+          >
+            {renderPlayer(p, p.id === nextIdx)}
+          </div>
+        );
+      })}
+
+      {/* Centerpiece */}
+      <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+        {centerContent}
+      </div>
     </div>
   );
 }
@@ -1196,16 +1264,19 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
       <div className="flex flex-col lg:flex-row h-full">
         <div className="flex-1 p-3 sm:p-4 pt-14 sm:pt-14 flex flex-col gap-3 sm:gap-4 min-w-0">
           <StatusBar state={state} viewerId={viewerId} isMyTurn={isMyTurn} />
-          <div className="grid gap-2 sm:gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-            {state.players.map((pp, i) => {
-              const isOwnArea = i === state.current && isMyTurn;
+          {/* Player tiles + center piles. Linear stack on small screens (turn-ordered);
+              circular table layout on lg+ so the viewer can see who's next at a glance. */}
+          {(() => {
+            const renderPlayerTile = (pp: Player, isNext: boolean) => {
+              const isOwnArea = pp.id === state.current && isMyTurn;
               const chainEligible = isOwnArea && src === 'hand' && state.deck.length === 0;
               const selectedFaceUpIds = isOwnArea ? new Set(state.selected.filter(id => pp.faceUp.some(c => c.id === id))) : undefined;
               return (
                 <PlayerArea
-                  key={pp.id} player={pp}
-                  isCurrent={i === state.current}
-                  isViewer={i === viewer && !isSpectator}
+                  player={pp}
+                  isCurrent={pp.id === state.current}
+                  isViewer={pp.id === viewer && !isSpectator}
+                  isNext={isNext}
                   faceDownClickable={isOwnArea && src === 'faceDown'}
                   onFaceDownClick={(id) => dispatch({ type: 'FLIP_FACEDOWN', id })}
                   faceUpClickable={chainEligible}
@@ -1214,9 +1285,43 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
                   emotes={emotes}
                 />
               );
-            })}
-          </div>
-          <div className="my-2"><CenterPiles deckCount={state.deck.length} pile={state.pile} burnedCount={state.burnedCount} lastBurnSize={state.lastBurnSize} /></div>
+            };
+            const center = <CenterPiles deckCount={state.deck.length} pile={state.pile} burnedCount={state.burnedCount} lastBurnSize={state.lastBurnSize} />;
+
+            // Sort by turn order from viewer (slot 0 = viewer, then turn-order onwards).
+            const safeViewer = viewer >= 0 ? viewer : state.current;
+            const n = state.players.length;
+            const nextIdx = nextActiveIndex(state.players, state.current, state.direction);
+            const sortedPlayers = [...state.players].sort((a, b) =>
+              (((a.id - safeViewer) * state.direction + n * n) % n)
+              - (((b.id - safeViewer) * state.direction + n * n) % n)
+            );
+
+            return (
+              <>
+                {/* Mobile / md: turn-ordered stack with the centerpiece below */}
+                <div className="lg:hidden">
+                  <div className="grid gap-2 sm:gap-3 grid-cols-1 sm:grid-cols-2">
+                    {sortedPlayers.map(pp => (
+                      <div key={pp.id}>{renderPlayerTile(pp, pp.id === nextIdx)}</div>
+                    ))}
+                  </div>
+                  <div className="my-3 flex justify-center">{center}</div>
+                </div>
+                {/* Desktop lg+: circular table */}
+                <div className="hidden lg:block">
+                  <CircularTable
+                    players={state.players}
+                    current={state.current}
+                    viewer={safeViewer}
+                    direction={state.direction}
+                    renderPlayer={renderPlayerTile}
+                    centerContent={center}
+                  />
+                </div>
+              </>
+            );
+          })()}
 
           <div className="border-t pt-3">
             <div className="flex items-center justify-between mb-2">
