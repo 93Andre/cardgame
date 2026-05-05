@@ -329,10 +329,13 @@ function PlayerArea({ player, isCurrent, isViewer, faceDownClickable, onFaceDown
 /* ============== Center piles ============== */
 
 // Stacked card layers visualizing depth. Top card is rendered DOMINANTLY at the front;
-// depth layers peek out behind it (down-right). This keeps the face-up pile card unmissable.
-function CardStack({ count, top, emptyLabel, tone = 'normal' }: {
+// depth layers peek out behind it (down-right). For the pile, layerCards renders the
+// real previously-played cards face-up underneath. For the deck, no layerCards is given
+// so card-back rectangles show (because the deck IS face-down).
+function CardStack({ count, top, layerCards, emptyLabel, tone = 'normal' }: {
   count: number;
   top?: React.ReactNode;
+  layerCards?: PileEntry[];     // when provided, each layer renders the actual face-up card from this list
   emptyLabel?: string;
   tone?: 'normal' | 'burned';
 }) {
@@ -345,32 +348,31 @@ function CardStack({ count, top, emptyLabel, tone = 'normal' }: {
     <div
       className="relative"
       style={{
-        // Reserve room for layers extending down-right beyond the top card's footprint.
         width: `calc(4rem + ${padPx}px)`,
         height: `calc(6rem + ${padPx}px)`,
       }}
     >
-      {/* depth layers — fan out down-right BEHIND the top card */}
       {Array.from({ length: baseLayers }).map((_, i) => {
-        const depth = baseLayers - i;
+        const depth = baseLayers - i;       // 1 = just under top, baseLayers = deepest visible
         const offset = depth * layerStep;
-        const layerCls = tone === 'burned'
+        const layerCardEntry = layerCards ? layerCards[layerCards.length - depth] : undefined;
+        const fallbackCls = tone === 'burned'
           ? 'border-rose-400/60 bg-gradient-to-b from-amber-100 to-rose-300'
           : 'border-indigo-800/60 bg-indigo-700';
         return (
           <div
             key={i}
             aria-hidden
-            className={`absolute w-14 h-20 sm:w-16 sm:h-24 rounded-md border ${layerCls}`}
-            style={{
-              top: offset, left: offset,
-              filter: `brightness(${1 - depth * 0.04})`,
-              boxShadow: i === 0 ? '0 1px 2px rgba(0,0,0,0.15)' : undefined,
-            }}
-          />
+            className="absolute"
+            style={{ top: offset, left: offset, filter: `brightness(${1 - depth * 0.05})` }}
+          >
+            {layerCardEntry
+              ? <CardFace card={layerCardEntry.card} jokerEffRank={layerCardEntry.effRank} />
+              : <div className={`w-14 h-20 sm:w-16 sm:h-24 rounded-md border ${fallbackCls}`} />
+            }
+          </div>
         );
       })}
-      {/* top card — face-up, prominent, no offset */}
       <div className="absolute top-0 left-0">
         {count > 0
           ? (top ?? <CardFace hidden />)
@@ -409,6 +411,7 @@ function CenterPiles({ deckCount, pile, burnedCount, lastBurnSize }: {
       <div className="flex flex-col items-center gap-1 relative">
         <CardStack
           count={pile.length}
+          layerCards={pile.slice(0, -1)}
           top={
             <AnimatePresence mode="popLayout">
               {top
