@@ -826,7 +826,8 @@ function HowToPlay() {
 
               <div>
                 <div className="font-bold text-base">📤 Picking up the pile</div>
-                <p>If you can't (or don't want to) play, click <strong>Pick up pile</strong>. You then choose <strong>one card to reveal</strong> to everyone before any cards enter your hand. The rest stay private.</p>
+                <p>If you can't (or don't want to) play, click <strong>Pick up pile</strong>. The pile cards join your hand, then you must <strong>reveal one card from your hand</strong> to the table. (The chosen card stays in your hand — only its identity becomes public.)</p>
+                <p className="text-xs text-gray-600">If your hand was empty before the pickup (e.g. playing from face-up), there's nothing private to reveal and the turn just passes.</p>
               </div>
 
               <div>
@@ -1187,11 +1188,14 @@ function EmoteBar({ onEmote }: { onEmote: (e: string) => void }) {
 function RevealChoiceScreen({ state, dispatch, viewerId }: {
   state: GameState; dispatch: (a: Action) => void; viewerId: number | null;
 }) {
-  const cards = sortCards(state.pendingReveal?.cards ?? []);
+  const rawCards = state.pendingReveal?.cards ?? [];
   const picker = state.players[state.current];
   const isMyChoice = viewerId === null
     ? !picker?.isAi
     : (viewerId === state.current && !picker?.isAi);
+  // Picker sees real cards (sorted for scanning); everyone else sees card backs only —
+  // these are private hand cards.
+  const cards = isMyChoice ? sortCards(rawCards) : rawCards;
   return (
     <div className="min-h-full flex flex-col items-center justify-center gap-5 p-6 bg-gradient-to-b from-amber-100/60 to-rose-100/60">
       <motion.div
@@ -1205,10 +1209,10 @@ function RevealChoiceScreen({ state, dispatch, viewerId }: {
         </h2>
         {isMyChoice ? (
           <p className="text-base sm:text-lg text-amber-900 font-semibold text-center max-w-xl">
-            👇 Click <span className="underline">one card</span> below to reveal it to everyone. The rest go privately into your hand.
+            👇 Reveal one card from <span className="underline">your hand</span> to the table. The picked-up cards have already joined your hand.
           </p>
         ) : (
-          <p className="text-base text-gray-700 text-center">Waiting for {picker?.name} to choose a card to reveal…</p>
+          <p className="text-base text-gray-700 text-center">Waiting for {picker?.name} to reveal a hand card…</p>
         )}
       </motion.div>
 
@@ -1225,17 +1229,17 @@ function RevealChoiceScreen({ state, dispatch, viewerId }: {
             animate={{ y: 0, opacity: 1 }}
             transition={{ type: 'spring', stiffness: 300, damping: 22 }}
             className={`bg-transparent border-0 p-0 ${isMyChoice ? 'cursor-pointer' : 'cursor-default'}`}
-            aria-label={`Reveal ${card.rank}${card.suit}`}
+            aria-label={isMyChoice ? `Reveal ${card.rank}${card.suit}` : 'hidden hand card'}
           >
             <div className={isMyChoice ? 'ring-2 ring-amber-400 rounded-md transition-shadow hover:shadow-2xl hover:ring-4 hover:ring-amber-500' : 'opacity-80'}>
-              <CardFace card={card} />
+              <CardFace card={isMyChoice ? card : undefined} hidden={!isMyChoice} />
             </div>
           </motion.button>
         ))}
       </div>
 
       {isMyChoice && (
-        <div className="text-xs text-gray-600 italic">Tap a card to reveal it · You'll keep all {cards.length} cards in your hand.</div>
+        <div className="text-xs text-gray-600 italic">Tap a card from your hand to reveal it.</div>
       )}
       {!isMyChoice && picker?.isAi && (
         <div className="text-sm text-gray-600 italic flex items-center gap-2">

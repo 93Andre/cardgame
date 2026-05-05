@@ -503,14 +503,31 @@ export function reducer(state: GameState, action: Action): GameState {
 
     case 'PICKUP_PILE': {
       if (state.pile.length === 0) return state;
+      const players = state.players.slice();
+      const p = { ...players[state.current] };
       const pickedCards = state.pile.map(e => e.card);
-      // Cards do NOT enter the picker's hand yet. They first must reveal one to everyone.
-      // The cards are held in pendingReveal until REVEAL_CHOICE is dispatched.
-      const log = logLine(state, `${state.players[state.current].name} is picking up ${pickedCards.length} cards — choose one to reveal…`);
+      // The reveal candidates are the picker's PRE-pickup hand (cards they were already holding).
+      // The picked-up pile cards were public on the table — revealing one of those is no information.
+      const handBeforePickup = [...p.hand];
+      p.hand = [...p.hand, ...pickedCards];
+      players[state.current] = p;
+
+      // If the picker had no cards in hand pre-pickup, there's nothing private to reveal — skip.
+      if (handBeforePickup.length === 0) {
+        const log = logLine(state, `${p.name} picked up the pile (${pickedCards.length} cards). No hand cards to reveal.`);
+        const direction = state.direction;
+        const current = nextActiveIndex(players, state.current, direction);
+        return {
+          ...state, players, pile: [], selected: [], sevenRestriction: false, log, flippedCard: null,
+          phase: 'pass', current, pendingReveal: null, revealedPickup: null, lastWasMine: false,
+        };
+      }
+
+      const log = logLine(state, `${p.name} picked up ${pickedCards.length} — must reveal a hand card…`);
       return {
-        ...state, pile: [], selected: [], sevenRestriction: false, log, flippedCard: null,
+        ...state, players, pile: [], selected: [], sevenRestriction: false, log, flippedCard: null,
         phase: 'reveal',
-        pendingReveal: { cards: pickedCards },
+        pendingReveal: { cards: handBeforePickup },
         revealedPickup: null,
         lastWasMine: false,
       };
@@ -544,17 +561,17 @@ export function reducer(state: GameState, action: Action): GameState {
         };
         return postPlay(next, state.current, 'faceDown', [card]);
       } else {
+        // Face-down phase implies hand and face-up were both empty — nothing private to reveal.
+        // Just dump pile + flipped card into the player's hand and pass turn.
         const picked = [...state.pile.map(e => e.card), card];
-        // Face-down was already removed from `np`; the picked-up cards stay in pendingReveal
-        // until REVEAL_CHOICE moves them into the player's hand.
-        players[state.current] = np;
-        const log = logLine(state, `${p.name} flipped ${card.rank}${card.suit} — illegal! Picking up ${picked.length} — choose one to reveal…`);
+        const np2: Player = { ...np, hand: [...np.hand, ...picked] };
+        players[state.current] = np2;
+        const log = logLine(state, `${p.name} flipped ${card.rank}${card.suit} — illegal! Picks up ${picked.length}.`);
+        const direction = state.direction;
+        const current = nextActiveIndex(players, state.current, direction);
         return {
           ...state, players, pile: [], flippedCard: null, selected: [], sevenRestriction: false,
-          phase: 'reveal',
-          pendingReveal: { cards: picked },
-          revealedPickup: null,
-          log, lastWasMine: false,
+          phase: 'pass', current, log, lastWasMine: false,
         };
       }
     }
@@ -566,17 +583,13 @@ export function reducer(state: GameState, action: Action): GameState {
       if (state.phase !== 'reveal' || !state.pendingReveal) return state;
       const chosen = state.pendingReveal.cards.find(c => c.id === action.id);
       if (!chosen) return state;
-      // Now the cards officially enter the picker's hand.
-      const players = state.players.slice();
-      const picker = { ...players[state.current] };
-      picker.hand = [...picker.hand, ...state.pendingReveal.cards];
-      players[state.current] = picker;
-      const log = logLine(state, `${picker.name} revealed: ${chosen.rank}${chosen.suit} (took ${state.pendingReveal.cards.length} cards).`);
+      // Picked-up cards are already in the picker's hand (added during PICKUP_PILE).
+      // The chosen card is from their pre-pickup hand — just publicly reveal it and pass turn.
+      const log = logLine(state, `${state.players[state.current].name} revealed: ${chosen.rank}${chosen.suit}.`);
       const direction = state.direction;
-      const current = nextActiveIndex(players, state.current, direction);
+      const current = nextActiveIndex(state.players, state.current, direction);
       return {
         ...state,
-        players,
         phase: 'pass',
         current,
         pendingReveal: null,
@@ -720,6 +733,12 @@ export const HIDDEN_CARD = (id: string): Card => ({ id, rank: '2', suit: '★' }
 // - Pile is fully visible.
 // - Face-up is fully visible.
 export function redactForViewer(state: GameState, viewer: number): GameState {
+  // pendingReveal cards now come from the picker's private hand — visible only to them.
+  const pendingReveal = !state.pendingReveal
+    ? null
+    : (state.current === viewer
+        ? state.pendingReveal
+        : { cards: state.pendingReveal.cards.map((_, i) => HIDDEN_CARD(`pr-${i}`)) });
   return {
     ...state,
     players: state.players.map(p => {
@@ -731,5 +750,6 @@ export function redactForViewer(state: GameState, viewer: number): GameState {
       };
     }),
     deck: state.deck.map((_, i) => HIDDEN_CARD(`dk-${i}`)),
+    pendingReveal,
   };
 }
