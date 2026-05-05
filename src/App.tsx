@@ -359,16 +359,16 @@ function PlayerArea({ player, isCurrent, isViewer, compact, faceDownClickable, o
   return (
     <div className={`relative ${compact ? 'p-1.5' : 'p-2 sm:p-3'} rounded-lg border-2 ${isCurrent ? `${c.border} ${c.bg} ring-2 ${c.ring}` : 'border-gray-300 bg-white/60'} flex flex-col ${compact ? 'gap-1' : 'gap-2'} min-w-0`}>
       {/* Turn-speed indicator: appears above the current player's tile after 15s of thinking,
-          fills proportionally over the next 30s. Subtle social pressure. */}
+          fills toward the 30s server-side auto-pickup cutoff. */}
       {isCurrent && typeof turnElapsedMs === 'number' && turnElapsedMs > 15000 && (
         <div className="absolute -top-1 left-2 right-2 h-1 bg-gray-200 rounded-full overflow-hidden">
           <div
             className={`h-full transition-all duration-1000 ease-linear ${
-              turnElapsedMs > 35000 ? 'bg-rose-500'
-                : turnElapsedMs > 25000 ? 'bg-amber-500'
+              turnElapsedMs > 27000 ? 'bg-rose-500'
+                : turnElapsedMs > 22000 ? 'bg-amber-500'
                 : 'bg-emerald-500'
             }`}
-            style={{ width: `${Math.min(100, ((turnElapsedMs - 15000) / 30000) * 100)}%` }}
+            style={{ width: `${Math.min(100, ((turnElapsedMs - 15000) / 15000) * 100)}%` }}
           />
         </div>
       )}
@@ -494,18 +494,24 @@ function CircularTable({ players, current, viewer, direction, renderPlayer, cent
   // Layout-specific dimensions. Landscape uses a wider aspect to lay tiles along the
   // long axis instead of stacking them — much better use of horizontal phone space.
   const tileWidth =
-    layout === 'desktop'  ? 'clamp(140px, 22vw, 220px)' :
+    layout === 'desktop'  ? 'clamp(120px, 16vw, 200px)' :
     layout === 'landscape' ? 'clamp(95px, 18vw, 150px)' :
                              'clamp(110px, 30vw, 180px)';
   const aspectRatio =
-    layout === 'desktop'  ? '5 / 4' :
+    layout === 'desktop'  ? '16 / 9' :
     layout === 'landscape' ? '5 / 3' :
                              '4 / 5';
   const minHeight =
-    layout === 'desktop'  ? 420 :
+    layout === 'desktop'  ? 280 :
     layout === 'landscape' ? 280 :
                              540;
+  // On desktop, also cap by viewport height so the hand below stays on-screen
+  // without scrolling on widescreen monitors.
+  const maxHeight =
+    layout === 'desktop' ? 'min(52vh, 480px)' :
+                           undefined;
   const rx =
+    layout === 'desktop'  ? (n <= 3 ? 0.42 : 0.45) :
     layout === 'landscape' ? (n <= 3 ? 0.42 : 0.45) :
     n <= 3 ? 0.34 : 0.40;
   const ry =
@@ -516,7 +522,7 @@ function CircularTable({ players, current, viewer, direction, renderPlayer, cent
   return (
     <div
       className="relative w-full mx-auto"
-      style={{ aspectRatio, maxWidth: 900, minHeight }}
+      style={{ aspectRatio, maxWidth: 1100, minHeight, maxHeight }}
     >
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full pointer-events-none overflow-visible">
         {/* Dashed outline animates around the table in the current play direction. */}
@@ -1479,7 +1485,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
   return (
     <LayoutGroup>
       <div className="flex flex-col lg:flex-row h-full">
-        <div className="flex-1 p-3 sm:p-4 pt-14 sm:pt-14 flex flex-col gap-3 sm:gap-4 min-w-0">
+        <div className="flex-1 p-3 sm:p-4 pt-14 sm:pt-14 lg:pt-3 flex flex-col gap-3 sm:gap-4 lg:gap-2 min-w-0">
           <StatusBar state={state} viewerId={viewerId} isMyTurn={isMyTurn} />
           {/* Player tiles + center piles. Linear stack on small screens (turn-ordered);
               circular table layout on lg+ so the viewer can see who's next at a glance. */}

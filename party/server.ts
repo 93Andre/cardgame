@@ -40,9 +40,10 @@ interface Room {
   state: GameState | null;
   emotes: Emote[];
   aiTimer?: ReturnType<typeof setTimeout>;
+  turnTimer?: ReturnType<typeof setTimeout>;
   lastActivityAt: number;
   createdAt: number;
-  abandonedAt?: number;  // timestamp when an in-progress game lost its last connected human
+  abandonedAt?: number;
 }
 
 interface ConnState {
@@ -53,6 +54,7 @@ interface ConnState {
 
 const ROOM_TTL_MS = 30 * 60 * 1000;
 const ABANDON_GRACE_MS = 60 * 1000;  // an in-progress game with no connected humans is ended after this
+const TURN_TIMEOUT_MS = 30 * 1000;   // human players are auto-picked-up if they stall this long
 
 function makeToken(): string {
   return crypto.randomUUID().replace(/-/g, '');
@@ -116,6 +118,7 @@ export default class GameServer implements Party.Server {
       }
       if (now - room.abandonedAt >= ABANDON_GRACE_MS) {
         if (room.aiTimer) clearTimeout(room.aiTimer);
+        if (room.turnTimer) clearTimeout(room.turnTimer);
         for (const s of room.spectators) { try { s.close(); } catch { /* ignore */ } }
         this.rooms.delete(code);
         dirty = true;
@@ -245,7 +248,43 @@ export default class GameServer implements Party.Server {
       this.persist();
       this.broadcast(room);
       this.scheduleAi(room);
+      this.scheduleTurnTimer(room);
     }, delay);
+  }
+
+  // Auto-pickup if a human stalls. AI is handled by scheduleAi.
+  scheduleTurnTimer(room: Room) {
+    if (room.turnTimer) { clearTimeout(room.turnTimer); room.turnTimer = undefined; }
+    if (!room.state) return;
+    const phase = room.state.phase;
+    if (phase !== 'play' && phase !== 'flipFaceDown' && phase !== 'reveal') return;
+    const cur = room.players[room.state.current];
+    if (!cur || cur.isAi) return;
+    room.turnTimer = setTimeout(() => {
+      room.turnTimer = undefined;
+      if (!room.state) return;
+      const p = room.state.phase;
+      if (p !== 'play' && p !== 'flipFaceDown' && p !== 'reveal') return;
+      const id = room.state.current;
+      const player = room.players[id];
+      if (!player || player.isAi) return;
+      let action: Action | null = null;
+      if (p === 'play') action = { type: 'PICKUP_PILE' };
+      else if (p === 'flipFaceDown') action = { type: 'RESOLVE_FLIP' };
+      else if (p === 'reveal') {
+        const cards = room.state.pendingReveal?.cards;
+        if (cards && cards.length > 0) {
+          const choice = cards[Math.floor(Math.random() * cards.length)];
+          action = { type: 'REVEAL_CHOICE', id: choice.id };
+        }
+      }
+      if (!action) return;
+      this.applyAction(room, id, action);
+      this.persist();
+      this.broadcast(room);
+      this.scheduleAi(room);
+      this.scheduleTurnTimer(room);
+    }, TURN_TIMEOUT_MS);
   }
 
   onConnect(_conn: Party.Connection) {
@@ -322,6 +361,8 @@ export default class GameServer implements Party.Server {
         sender.setState({ code, id: player.id, spectator: false } satisfies ConnState);
         this.send(sender, { t: 'SESSION', code, id: player.id, token });
         this.broadcast(room);
+        this.scheduleAi(room);
+        this.scheduleTurnTimer(room);
         return;
       }
 
@@ -384,6 +425,7 @@ export default class GameServer implements Party.Server {
         this.broadcast(room);
         this.persist();
         this.scheduleAi(room);
+        this.scheduleTurnTimer(room);
         return;
       }
 
@@ -394,6 +436,7 @@ export default class GameServer implements Party.Server {
         this.broadcast(room);
         this.persist();
         this.scheduleAi(room);
+        this.scheduleTurnTimer(room);
         return;
       }
 
@@ -424,6 +467,7 @@ export default class GameServer implements Party.Server {
         this.broadcast(room);
         this.persist();
         this.scheduleAi(room);
+        this.scheduleTurnTimer(room);
         return;
       }
 
@@ -443,6 +487,7 @@ export default class GameServer implements Party.Server {
           try { s.close(); } catch { /* ignore */ }
         }
         if (room.aiTimer) clearTimeout(room.aiTimer);
+        if (room.turnTimer) clearTimeout(room.turnTimer);
         this.rooms.delete(ref.code);
         this.persist();
         return;

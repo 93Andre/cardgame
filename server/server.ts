@@ -40,6 +40,7 @@ interface Room {
   state: GameState | null;
   emotes: Emote[];
   aiTimer?: NodeJS.Timeout;
+  turnTimer?: NodeJS.Timeout;
   lastActivityAt: number;   // ms timestamp of last meaningful activity
   createdAt: number;
   abandonedAt?: number;     // when the last human disconnected from an in-progress game
@@ -54,6 +55,7 @@ function sweepAbandoned() {
     if (hasConnectedHuman(room)) { room.abandonedAt = undefined; continue; }
     if (now - room.abandonedAt >= ABANDON_GRACE_MS) {
       if (room.aiTimer) clearTimeout(room.aiTimer);
+      if (room.turnTimer) clearTimeout(room.turnTimer);
       for (const s of room.spectators) { try { s.close(); } catch { /* ignore */ } }
       rooms.delete(code);
     }
@@ -140,6 +142,7 @@ function sweepStaleRooms() {
     for (const p of room.players) { try { p.ws?.close(); } catch { /* ignore */ } }
     for (const s of room.spectators) { try { s.close(); } catch { /* ignore */ } }
     if (room.aiTimer) clearTimeout(room.aiTimer);
+    if (room.turnTimer) clearTimeout(room.turnTimer);
     rooms.delete(code);
     dropped++;
   }
@@ -273,7 +276,45 @@ function scheduleAi(room: Room) {
     persist();
     broadcast(room);
     scheduleAi(room);
+    scheduleTurnTimer(room);
   }, delay);
+}
+
+const TURN_TIMEOUT_MS = 30 * 1000;
+
+// Auto-pickup if a human stalls. AI is handled by scheduleAi.
+function scheduleTurnTimer(room: Room) {
+  if (room.turnTimer) { clearTimeout(room.turnTimer); room.turnTimer = undefined; }
+  if (!room.state) return;
+  const phase = room.state.phase;
+  if (phase !== 'play' && phase !== 'flipFaceDown' && phase !== 'reveal') return;
+  const cur = room.players[room.state.current];
+  if (!cur || cur.isAi) return;
+  room.turnTimer = setTimeout(() => {
+    room.turnTimer = undefined;
+    if (!room.state) return;
+    const p = room.state.phase;
+    if (p !== 'play' && p !== 'flipFaceDown' && p !== 'reveal') return;
+    const id = room.state.current;
+    const player = room.players[id];
+    if (!player || player.isAi) return;
+    let action: Action | null = null;
+    if (p === 'play') action = { type: 'PICKUP_PILE' };
+    else if (p === 'flipFaceDown') action = { type: 'RESOLVE_FLIP' };
+    else if (p === 'reveal') {
+      const cards = room.state.pendingReveal?.cards;
+      if (cards && cards.length > 0) {
+        const choice = cards[Math.floor(Math.random() * cards.length)];
+        action = { type: 'REVEAL_CHOICE', id: choice.id };
+      }
+    }
+    if (!action) return;
+    applyAction(room, id, action);
+    persist();
+    broadcast(room);
+    scheduleAi(room);
+    scheduleTurnTimer(room);
+  }, TURN_TIMEOUT_MS);
 }
 
 const PORT = Number(process.env.PORT ?? 8787);
@@ -352,6 +393,8 @@ wss.on('connection', ws => {
         socketToRoom.set(ws, { code, id: player.id, spectator: false });
         send(ws, { t: 'SESSION', code, id: player.id, token });
         broadcast(room);
+        scheduleAi(room);
+        scheduleTurnTimer(room);
         return;
       }
 
@@ -422,6 +465,7 @@ wss.on('connection', ws => {
         broadcast(room);
         persist();
         scheduleAi(room);
+        scheduleTurnTimer(room);
         return;
       }
 
@@ -434,6 +478,7 @@ wss.on('connection', ws => {
         broadcast(room);
         persist();
         scheduleAi(room);
+        scheduleTurnTimer(room);
         return;
       }
 
@@ -468,6 +513,7 @@ wss.on('connection', ws => {
         broadcast(room);
         persist();
         scheduleAi(room);
+        scheduleTurnTimer(room);
         return;
       }
 
@@ -488,6 +534,7 @@ wss.on('connection', ws => {
           try { s.close(); } catch { /* ignore */ }
         }
         if (room.aiTimer) clearTimeout(room.aiTimer);
+        if (room.turnTimer) clearTimeout(room.turnTimer);
         rooms.delete(ref.code);
         persist();
         return;
