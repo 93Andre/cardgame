@@ -480,12 +480,9 @@ wss.on('connection', ws => {
     }
     const player = room.players[ref.id];
     if (player) player.ws = null;
-    if (!room.state && room.players.every(p => p.isAi || p.ws === null)) {
-      // Lobby with no humans → drop room
-      rooms.delete(ref.code);
-      persist();
-      return;
-    }
+    // Keep the room alive on disconnect — the TTL sweep will clean it up if it stays idle.
+    // Auto-deleting here would erase a freshly-created room the moment the host's
+    // connection blips before friends can join.
     broadcast(room);
   });
 });

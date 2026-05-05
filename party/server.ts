@@ -417,11 +417,10 @@ export default class GameServer implements Party.Server {
     }
     const player = room.players[ref.id];
     if (player) player.conn = null;
-    if (!room.state && room.players.every(p => p.isAi || p.conn === null)) {
-      this.rooms.delete(ref.code);
-      this.persist();
-      return;
-    }
+    // Don't delete the room on disconnect — a temporary network blip or laptop sleep
+    // would otherwise erase a freshly-created room before friends can join. The room
+    // will be cleaned up on the next cold start if it stays inactive for ROOM_TTL_MS.
     this.broadcast(room);
+    this.persist();
   }
 }
