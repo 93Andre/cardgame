@@ -672,16 +672,48 @@ function CenterPiles({ deckCount, pile, burnedCount, lastBurnSize }: {
 
 /* ============== Game log (with ARIA live) ============== */
 
-function GameLog({ log }: { log: string[] }) {
+function GameLog({ log, sidebar = false }: { log: string[]; sidebar?: boolean }) {
   return (
-    <div className="hidden lg:block w-72 max-h-[80vh] overflow-y-auto border border-gray-300 rounded-lg p-3 bg-white/70 text-sm">
-      <div className="font-semibold mb-2">Game log</div>
+    <div className={sidebar
+      ? 'hidden lg:block w-72 max-h-[80vh] overflow-y-auto border border-gray-300 rounded-lg p-3 bg-white/70 text-sm'
+      : 'p-3 text-sm'}
+    >
+      {sidebar && <div className="font-semibold mb-2">Game log</div>}
       <ul aria-live="polite" className="space-y-1">
         {log.slice().reverse().map((l, i) => (
           <li key={i} className="text-gray-700 leading-snug">• {l}</li>
         ))}
       </ul>
     </div>
+  );
+}
+
+// Slide-in overlay version of the game log (for mobile / tablet, where the sidebar is hidden).
+function GameLogOverlay({ log, open, onClose }: { log: string[]; open: boolean; onClose: () => void }) {
+  return (
+    <AnimatePresence>
+      {open && (
+        <>
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            transition={{ duration: 0.18 }}
+            onClick={onClose}
+            className="fixed inset-0 z-30 bg-black/40 lg:hidden"
+          />
+          <motion.div
+            initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }}
+            transition={{ type: 'spring', stiffness: 280, damping: 30 }}
+            className="fixed inset-y-0 right-0 z-40 w-80 max-w-[85vw] bg-stone-50 shadow-2xl overflow-y-auto lg:hidden"
+          >
+            <div className="px-3 py-2 flex items-center justify-between border-b border-gray-200 sticky top-0 bg-stone-50">
+              <span className="font-semibold">📜 Game log</span>
+              <button onClick={onClose} className="px-2 py-0.5 rounded hover:bg-gray-200" aria-label="Close log">×</button>
+            </div>
+            <GameLog log={log} />
+          </motion.div>
+        </>
+      )}
+    </AnimatePresence>
   );
 }
 
@@ -1305,6 +1337,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
   const me = state.players[viewer];
   const src = me ? activeSource(me, state.deck.length === 0) : null;
   const [sortOn, setSortOn] = useState(true);
+  const [logOpen, setLogOpen] = useState(false);
 
   // Ultimate mode: viewer can cut if they have cards matching the top of the pile.
   const myCutMatches = !isSpectator && state.mode === 'ultimate' && me ? cutMatches(state, viewer) : [];
@@ -1392,10 +1425,17 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
                 {isMyTurn && src === 'faceUp' && <>Hand & deck empty — playing from face-up.</>}
                 {isMyTurn && src === 'faceDown' && <>Pick a face-down card to flip.</>}
               </div>
-              <button
-                onClick={() => setSortOn(s => !s)}
-                className="text-xs px-2 py-1 border border-gray-300 rounded bg-white/70"
-              >{sortOn ? 'Unsorted' : 'Sort'}</button>
+              <div className="flex gap-1.5">
+                <button
+                  onClick={() => setLogOpen(o => !o)}
+                  className="lg:hidden text-xs px-2 py-1 border border-gray-300 rounded bg-white/70"
+                  aria-label="Open game log"
+                >📜 Log</button>
+                <button
+                  onClick={() => setSortOn(s => !s)}
+                  className="text-xs px-2 py-1 border border-gray-300 rounded bg-white/70"
+                >{sortOn ? 'Unsorted' : 'Sort'}</button>
+              </div>
             </div>
             {/* Face-down phase: render the player's face-down cards here as the primary interaction surface. */}
             {isMyTurn && src === 'faceDown' && me && (
@@ -1430,37 +1470,48 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
                 </LayoutGroup>
               </div>
             )}
-            <div className="mt-3 flex gap-2 items-center flex-wrap justify-center">
+          </div>
+
+          {/* Action bar — sticky at the bottom so the primary actions are always thumb-reachable
+              and never hidden behind a scrolled hand strip. Only renders when the viewer can
+              actually act (their turn) so it doesn't clutter the layout when watching. */}
+          {(isMyTurn || canCut) && (
+            <div className="sticky bottom-0 left-0 right-0 z-20 mt-2 pb-3 pt-2 px-3 -mx-3 sm:-mx-4 flex items-center gap-2 flex-wrap justify-center bg-gradient-to-t from-emerald-950/80 via-emerald-900/40 to-transparent">
+              {isMyTurn && !anyLegal && src && src !== 'faceDown' && (
+                <span className="text-xs text-rose-200 italic mr-1">No legal play — pick up.</span>
+              )}
               <button
                 disabled={!canPlay}
                 onClick={() => dispatch({ type: 'PLAY_SELECTED' })}
-                className={`px-4 py-2 rounded font-semibold ${canPlay ? 'bg-emerald-500 hover:bg-emerald-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
-              >Play selected</button>
+                className={`px-5 py-2.5 sm:px-6 sm:py-3 rounded-xl text-sm sm:text-base font-bold flex items-center gap-2 shadow-lg transition-all ${canPlay ? 'bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-white' : 'bg-stone-700/70 text-stone-400 cursor-not-allowed'}`}
+              >
+                <span className="text-lg">▶</span> Play
+              </button>
               <button
                 disabled={!isMyTurn || state.pile.length === 0 || src === 'faceDown'}
                 onClick={() => dispatch({ type: 'PICKUP_PILE' })}
-                className={`px-4 py-2 rounded font-semibold ${isMyTurn && state.pile.length > 0 && src !== 'faceDown' ? 'bg-rose-500 hover:bg-rose-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
-              >Pick up pile</button>
-              {isMyTurn && !anyLegal && src && src !== 'faceDown' && (
-                <span className="text-xs text-rose-700">No legal play — pick up.</span>
-              )}
+                className={`px-5 py-2.5 sm:px-6 sm:py-3 rounded-xl text-sm sm:text-base font-bold flex items-center gap-2 shadow-lg transition-all ${isMyTurn && state.pile.length > 0 && src !== 'faceDown' ? 'bg-rose-500 hover:bg-rose-400 active:scale-95 text-white' : 'bg-stone-700/70 text-stone-400 cursor-not-allowed'}`}
+              >
+                <span className="text-lg">⤴</span> Pick up
+              </button>
               {canCut && (
                 <motion.button
                   initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
                   whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
                   onClick={() => dispatch({ type: 'CUT', player: viewer, ids: myCutMatches.map(c => c.id) })}
-                  className="px-4 py-2 rounded font-bold bg-fuchsia-600 hover:bg-fuchsia-700 text-white shadow-lg animate-pulse"
+                  className="px-5 py-2.5 sm:px-6 sm:py-3 rounded-xl text-sm sm:text-base font-bold flex items-center gap-2 bg-fuchsia-600 hover:bg-fuchsia-500 active:scale-95 text-white shadow-lg animate-pulse"
                   title={`Cut with ${myCutMatches.map(c => c.rank + c.suit).join(', ')}`}
-                >✂ CUT! ({myCutMatches.length})</motion.button>
+                >✂ CUT ({myCutMatches.length})</motion.button>
               )}
             </div>
-          </div>
+          )}
 
           {onEmote && !isSpectator && (
             <EmoteBar onEmote={onEmote} />
           )}
         </div>
-        <GameLog log={state.log} />
+        <GameLog log={state.log} sidebar />
+        <GameLogOverlay log={state.log} open={logOpen} onClose={() => setLogOpen(false)} />
       </div>
     </LayoutGroup>
   );
