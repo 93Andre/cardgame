@@ -1116,7 +1116,7 @@ function HowToPlay() {
                 <div className="font-bold text-base">▶ Playing a turn</div>
                 <p>Play a card <strong>equal to or higher</strong> than the top of the pile.</p>
                 <p>Card order: <span className="font-mono text-xs">3 · 4 · 5 · 6 · 7 · 8 · 9 · J · Q · K · A</span></p>
-                <p>You can play <strong>multiple cards of the same rank</strong> in one turn (e.g. two 7s).</p>
+                <p>You can play <strong>multiple cards of the same rank</strong> in one turn (e.g. two 7s). <strong>Jokers can only be played with other Jokers</strong> — never combined with any other rank.</p>
                 <p>After your play, you refill your hand to 3 from the deck while the deck still has cards.</p>
               </div>
 
@@ -1146,10 +1146,11 @@ function HowToPlay() {
               <div>
                 <div className="font-bold text-base">🔥 Burns</div>
                 <ul className="space-y-0.5 text-sm">
-                  <li>• A <strong>10</strong> burns the pile. Turn passes to next player.</li>
-                  <li>• <strong>4 of a kind in a row</strong> (across one or multiple turns) burns the pile. Player who placed the 4th card goes again.</li>
+                  <li>• A <strong>10</strong> burns the pile. Turn passes to the next player.</li>
+                  <li>• <strong>4 of a kind in a row</strong> (across one or multiple turns) burns the pile. <strong>Turn passes</strong> — the burn no longer grants another turn.</li>
+                  <li>• <strong>Exception:</strong> if a player plays <strong>four 3s in a single move</strong>, they go again.</li>
                   <li>• Burn check uses <em>actual</em> rank — a Joker copying a 7 does <strong>not</strong> count toward four 7s. Four real Jokers do burn.</li>
-                  <li>• When a pile burns it goes to the burn pile (the 🔥 stack — you can see how many cards have been removed from play).</li>
+                  <li>• Burned cards go to the rose burn-stack so you can see how many have been removed from play.</li>
                 </ul>
               </div>
 

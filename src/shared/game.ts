@@ -170,14 +170,16 @@ export function cardsFromSource(p: Player, src: Source): Card[] {
 
 export function canPlayCards(cards: Card[], pile: PileEntry[], sevenLock: boolean): boolean {
   if (cards.length === 0) return false;
-  const nonJokerRanks = new Set(cards.filter(c => c.rank !== 'JK').map(c => c.rank));
-  if (nonJokerRanks.size > 1) return false;
-  const baseRank: Rank = nonJokerRanks.size === 0 ? 'JK' : ([...nonJokerRanks][0] as Rank);
+  // House rule: jokers are no longer wild within a multi-card play. All cards in the
+  // selection must share the SAME actual rank — so {Joker + 5} is rejected, while
+  // {Joker + Joker} or {5 + 5} are fine.
+  const ranks = new Set(cards.map(c => c.rank));
+  if (ranks.size > 1) return false;
+  const baseRank = [...ranks][0] as Rank;
   const top = topEffRank(pile);
   // 2/10/Joker are always playable (exempt from both ≥-top and 7-lock rules).
   if (baseRank === '2' || baseRank === '10' || baseRank === 'JK') return true;
   if (top === null) return true;
-  // 7-lock inverts the rule: must play ≤7 (NOT ≥top).
   if (sevenLock) return RANK_VALUE[baseRank] <= 7;
   return RANK_VALUE[baseRank] >= RANK_VALUE[top];
 }
@@ -377,15 +379,18 @@ function postPlay(stateIn: GameState, playerIdx: number, sourceUsed: Source, pla
     goesAgain = false;
   } else if (burnedByFour) {
     const burnedSize = state.pile.length;
+    // House rule: a 4-of-a-kind burn passes the turn UNLESS the player just played four 3s
+    // in a single move — that's the only exception that grants another turn.
+    const isFourThreesInOneGo = played.length === 4 && played.every(c => c.rank === '3');
     state = {
       ...state, pile: [],
       burnedCount: state.burnedCount + burnedSize,
       lastBurnSize: burnedSize,
       stats: bumpStats(state, playerIdx, { burns: 1 }),
-      log: logLine(state, `Four of a kind (${burnedSize} cards)! Pile burned. Same player plays again.`),
+      log: logLine(state, `Four of a kind (${burnedSize} cards)! Pile burned.${isFourThreesInOneGo ? ' Same player plays again (four 3s).' : ' Turn passes.'}`),
     };
     pileCleared = true;
-    goesAgain = true;
+    goesAgain = isFourThreesInOneGo;
   } else {
     // No burn this play — clear the lastBurnSize flourish so it doesn't linger.
     state = { ...state, lastBurnSize: 0 };
@@ -539,10 +544,6 @@ export function reducer(state: GameState, action: Action): GameState {
       const faceUpCard = p.faceUp.find(c => c.id === action.id);
       const card = handCard ?? faceUpCard;
       if (!card) return state;
-      // Source restrictions: if currently playing from face-up, hand cards aren't selectable
-      // (hand is empty there anyway). When playing from hand, face-up cards are selectable
-      // only when chaining is possible — deck must be empty. Final chain validity (all hand
-      // cards included) is checked at PLAY time.
       if (src === 'faceUp' && handCard) return state;
       if (src === 'hand' && faceUpCard && state.deck.length > 0) return state;
 
@@ -554,8 +555,9 @@ export function reducer(state: GameState, action: Action): GameState {
         .map(id => p.hand.find(c => c.id === id) ?? p.faceUp.find(c => c.id === id))
         .filter(Boolean) as Card[];
       const allCards = [...sel, card];
-      const nonJk = new Set(allCards.filter(c => c.rank !== 'JK').map(c => c.rank));
-      if (nonJk.size > 1) return state;
+      // House rule: jokers can only be selected with other jokers, not with any other rank.
+      const ranks = new Set(allCards.map(c => c.rank));
+      if (ranks.size > 1) return state;
       return { ...state, selected: [...state.selected, action.id] };
     }
 

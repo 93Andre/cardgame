@@ -173,9 +173,51 @@ const afterBurn = reducer(burnScene, { type: 'CUT', player: 1, ids: ['9♥·d2']
 check('cut that completes 4-of-a-kind burns the pile', () => {
   assert.equal(afterBurn.pile.length, 0);
 });
-check('cut-burn cutter goes again (lastWasMine)', () => {
-  assert.equal(afterBurn.current, 1);
-  assert.equal(afterBurn.lastWasMine, true);
+check('4-of-a-kind burn (single card from cut) does NOT grant another turn — turn passes', () => {
+  assert.notEqual(afterBurn.current, 1);  // cutter does NOT keep playing
+  assert.equal(afterBurn.lastWasMine, false);
+});
+
+// House rule: only "four 3s in one go" still grants a bonus turn after a 4-of-a-kind burn.
+function makeFourThreesScenario() {
+  const s = newGame(4);
+  const threes = ['3♣', '3♥', '3♦', '3♠'].map(id => ({ id, rank: '3', suit: id.slice(-1) }));
+  const ids = new Set(threes.map(t => t.id));
+  s.players = s.players.map(p => ({
+    ...p,
+    hand: p.hand.filter(c => !ids.has(c.id)),
+    faceUp: p.faceUp.filter(c => !ids.has(c.id)),
+    faceDown: p.faceDown.filter(c => !ids.has(c.id)),
+  }));
+  s.deck = s.deck.filter(c => !ids.has(c.id));
+  s.players[0] = { ...s.players[0], hand: [...s.players[0].hand, ...threes] };
+  s.phase = 'play';
+  s.swapReady = [true, true, true, true];
+  s.current = 0;
+  return s;
+}
+const fourThreesScene = makeFourThreesScenario();
+const afterFourThrees = reducer(fourThreesScene, { type: 'PLAY_CARDS', ids: ['3♣', '3♥', '3♦', '3♠'] });
+check('four 3s in a single move burns AND grants another turn', () => {
+  assert.equal(afterFourThrees.pile.length, 0);
+  assert.equal(afterFourThrees.current, 0);
+  assert.equal(afterFourThrees.lastWasMine, true);
+});
+
+// Joker mixing rule: joker cannot be played with non-jokers.
+console.log('\n[Joker mixing rule]\n');
+const emptyPile = [];
+check('joker alone is playable', () => {
+  assert.equal(canPlayCards([{ id: 'JK1', rank: 'JK', suit: '★' }], emptyPile, false), true);
+});
+check('two jokers together are playable', () => {
+  assert.equal(canPlayCards([{ id: 'JK1', rank: 'JK', suit: '★' }, { id: 'JK2', rank: 'JK', suit: '★' }], emptyPile, false), true);
+});
+check('joker + 5 is REJECTED', () => {
+  assert.equal(canPlayCards([{ id: 'JK1', rank: 'JK', suit: '★' }, { id: '5♣', rank: '5', suit: '♣' }], emptyPile, false), false);
+});
+check('two 5s together still playable', () => {
+  assert.equal(canPlayCards([{ id: '5♣', rank: '5', suit: '♣' }, { id: '5♥', rank: '5', suit: '♥' }], emptyPile, false), true);
 });
 
 // 7. 7-or-lower lock does not block exact-match cut (but only because cut == same card).
