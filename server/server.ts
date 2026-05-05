@@ -466,6 +466,28 @@ wss.on('connection', ws => {
         return;
       }
 
+      case 'DELETE_ROOM': {
+        const ref = socketToRoom.get(ws);
+        if (!ref) return err(ws, 'Not in a room');
+        const room = rooms.get(ref.code); if (!room) return;
+        if (ref.id !== room.hostId) return err(ws, 'Only the host can delete the room');
+        const reason = `${room.players[room.hostId]?.name ?? 'Host'} closed the room`;
+        for (const p of room.players) {
+          if (p.ws) {
+            send(p.ws, { t: 'ROOM_CLOSED', reason });
+            try { p.ws.close(); } catch { /* ignore */ }
+          }
+        }
+        for (const s of room.spectators) {
+          send(s, { t: 'ROOM_CLOSED', reason });
+          try { s.close(); } catch { /* ignore */ }
+        }
+        if (room.aiTimer) clearTimeout(room.aiTimer);
+        rooms.delete(ref.code);
+        persist();
+        return;
+      }
+
       case 'LIST_ROOMS': {
         const list = [...rooms.values()].map(r => ({
           code: r.code,

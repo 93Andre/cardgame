@@ -422,6 +422,27 @@ export default class GameServer implements Party.Server {
         return;
       }
 
+      case 'DELETE_ROOM': {
+        const ref = senderState; if (!ref) return this.err(sender, 'Not in a room');
+        const room = this.rooms.get(ref.code); if (!room) return;
+        if (ref.id !== room.hostId) return this.err(sender, 'Only the host can delete the room');
+        const reason = `${room.players[room.hostId]?.name ?? 'Host'} closed the room`;
+        for (const p of room.players) {
+          if (p.conn) {
+            this.send(p.conn, { t: 'ROOM_CLOSED', reason });
+            try { p.conn.close(); } catch { /* ignore */ }
+          }
+        }
+        for (const s of room.spectators) {
+          this.send(s, { t: 'ROOM_CLOSED', reason });
+          try { s.close(); } catch { /* ignore */ }
+        }
+        if (room.aiTimer) clearTimeout(room.aiTimer);
+        this.rooms.delete(ref.code);
+        this.persist();
+        return;
+      }
+
       case 'LIST_ROOMS': {
         const list = [...this.rooms.values()].map(r => ({
           code: r.code,

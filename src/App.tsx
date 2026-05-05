@@ -6,6 +6,7 @@ import {
   type GameState,
   type PileEntry,
   type Player,
+  type PlayerStats,
   type Rank,
   type Source,
   type Suit,
@@ -164,6 +165,17 @@ class SoundEngine {
 
 const SFX_FAHHHH = '/sfx/fahhhh.mp3';
 const SFX_OBJECTION = '/sfx/objection.mp3';
+
+/* ============== AI speed setting ============== */
+
+// Multiplier on AI move delays. <1 = faster, >1 = slower. Persists in localStorage.
+const AI_SPEED_KEY = 'ph_ai_speed';
+function loadAiSpeed(): number {
+  try { const v = parseFloat(localStorage.getItem(AI_SPEED_KEY) ?? '1'); return Number.isFinite(v) ? v : 1; } catch { return 1; }
+}
+function saveAiSpeed(v: number) {
+  try { localStorage.setItem(AI_SPEED_KEY, String(v)); } catch { /* ignore */ }
+}
 const sfx = new SoundEngine();
 
 /* ============== Per-player palette ============== */
@@ -552,25 +564,41 @@ function StatusBar({ state, viewerId, isMyTurn }: { state: GameState; viewerId: 
 
 /* ============== Volume / mute ============== */
 
-function SoundControls({ muted, volume, setMuted, setVolume }: {
+function SoundControls({ muted, volume, setMuted, setVolume, aiSpeed, setAiSpeed }: {
   muted: boolean; volume: number; setMuted: (m: boolean) => void; setVolume: (v: number) => void;
+  aiSpeed: number; setAiSpeed: (v: number) => void;
 }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="fixed top-3 right-3 z-50 flex items-center gap-2">
+    <div className="fixed top-3 right-3 z-50 flex items-end gap-2">
       {open && (
-        <input
-          type="range" min={0} max={1} step={0.05} value={volume}
-          onChange={e => setVolume(parseFloat(e.target.value))}
-          className="w-24"
-          aria-label="Volume"
-        />
+        <div className="bg-white/90 border border-gray-300 rounded-lg shadow p-3 flex flex-col gap-2 text-xs">
+          <label className="flex items-center gap-2">
+            <span className="w-16">Volume</span>
+            <input
+              type="range" min={0} max={1} step={0.05} value={volume}
+              onChange={e => setVolume(parseFloat(e.target.value))}
+              className="w-32"
+              aria-label="Volume"
+            />
+          </label>
+          <label className="flex items-center gap-2">
+            <span className="w-16">AI speed</span>
+            <input
+              type="range" min={0.25} max={2} step={0.05} value={aiSpeed}
+              onChange={e => setAiSpeed(parseFloat(e.target.value))}
+              className="w-32"
+              aria-label="AI speed"
+            />
+            <span className="tabular-nums w-10 text-right">{aiSpeed < 1 ? `${(1/aiSpeed).toFixed(1)}× fast` : aiSpeed > 1 ? `${aiSpeed.toFixed(1)}× slow` : '1×'}</span>
+          </label>
+        </div>
       )}
       <button
         onClick={() => setOpen(o => !o)}
-        title="Volume"
+        title="Settings"
         className="w-9 h-9 rounded-full bg-white/80 border border-gray-300 shadow text-base hover:bg-white"
-      >🎚</button>
+      >⚙</button>
       <button
         onClick={() => setMuted(!muted)}
         title={muted ? 'Unmute' : 'Mute'}
@@ -920,8 +948,8 @@ function MenuScreen({ onLocal, onNetwork, prefilledCode }: { onLocal: () => void
 }
 
 function LocalSetupScreen({ onStart, onBack }: { onStart: (humans: number, ais: number) => void; onBack: () => void }) {
-  const [humans, setHumans] = useState(2);
-  const [ais, setAis] = useState(1);
+  const [humans, setHumans] = useState(1);
+  const [ais, setAis] = useState(2);
   const total = humans + ais;
   const valid = humans >= 1 && total >= MIN_PLAYERS && total <= MAX_PLAYERS;
   return (
@@ -1090,7 +1118,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
   return (
     <LayoutGroup>
       <div className="flex flex-col lg:flex-row h-full">
-        <div className="flex-1 p-3 sm:p-4 flex flex-col gap-3 sm:gap-4 min-w-0">
+        <div className="flex-1 p-3 sm:p-4 pt-14 sm:pt-14 flex flex-col gap-3 sm:gap-4 min-w-0">
           <StatusBar state={state} viewerId={viewerId} isMyTurn={isMyTurn} />
           <div className="grid gap-2 sm:gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
             {state.players.map((pp, i) => (
@@ -1295,9 +1323,28 @@ function EndScreen({ state, onPlayAgain }: { state: GameState; onPlayAgain: () =
   const order = state.players
     .filter(p => p.finishPos !== null)
     .sort((a, b) => (a.finishPos! - b.finishPos!));
+
+  // "Awards": who topped each metric (only awarded if positive).
+  const winnerOf = (key: keyof PlayerStats): number | null => {
+    let best: number | null = null;
+    let bestVal = 0;
+    for (const p of state.players) {
+      const v = state.stats[p.id]?.[key] ?? 0;
+      if (v > bestVal) { bestVal = v; best = p.id; }
+    }
+    return bestVal > 0 ? best : null;
+  };
+  const ultimate = state.mode === 'ultimate';
+  const awards: { label: string; emoji: string; key: keyof PlayerStats }[] = [
+    { label: 'Most pickups', emoji: '📥', key: 'pickups' },
+    { label: 'Most cards played', emoji: '🃏', key: 'cardsPlayed' },
+    { label: 'Most power cards', emoji: '⚡', key: 'powerCards' },
+    { label: 'Most burns triggered', emoji: '🔥', key: 'burns' },
+    ...(ultimate ? [{ label: 'Most cuts', emoji: '✂', key: 'cuts' as keyof PlayerStats }] : []),
+  ];
+
   return (
-    <div className="h-full flex flex-col items-center justify-center gap-4 relative overflow-hidden">
-      {/* Falling poop celebration */}
+    <div className="min-h-full flex flex-col items-center justify-center gap-5 p-6 relative overflow-hidden">
       <div className="absolute inset-0 pointer-events-none">
         {Array.from({ length: 24 }).map((_, i) => (
           <motion.div
@@ -1309,15 +1356,76 @@ function EndScreen({ state, onPlayAgain }: { state: GameState; onPlayAgain: () =
           >💩</motion.div>
         ))}
       </div>
+
       <motion.h1
         initial={{ scale: 0, rotate: -10 }} animate={{ scale: 1, rotate: 0 }}
         transition={{ type: 'spring', stiffness: 200 }}
         className="text-3xl sm:text-5xl font-black text-center px-4 z-10"
       >💩 {loser?.name} is the Poop Head!</motion.h1>
-      <ol className="bg-white/90 p-4 rounded-lg border border-gray-300 z-10 min-w-[240px]">
+
+      <ol className="bg-white/90 p-4 rounded-lg border border-gray-300 z-10 min-w-[260px]">
         {order.map(p => <li key={p.id} className="flex items-center gap-2"><span className={`inline-block w-2 h-2 rounded-full ${colorFor(p.id).dot}`} />#{p.finishPos} — {p.name}</li>)}
         <li className="text-rose-700 font-semibold flex items-center gap-2"><span className={`inline-block w-2 h-2 rounded-full ${colorFor(loser?.id ?? 0).dot}`} />#{state.players.length} (Poop Head) — {loser?.name}</li>
       </ol>
+
+      {/* Awards row */}
+      <div className="bg-white/90 p-4 rounded-lg border border-gray-300 z-10 max-w-2xl w-full">
+        <div className="font-bold text-base mb-2">🏆 Awards</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {awards.map(a => {
+            const winner = winnerOf(a.key);
+            const val = winner !== null ? state.stats[winner]?.[a.key] ?? 0 : 0;
+            return (
+              <div key={a.key} className="flex items-center justify-between text-sm border border-gray-200 rounded px-2 py-1.5">
+                <span className="flex items-center gap-1.5">
+                  <span className="text-base">{a.emoji}</span>
+                  <span>{a.label}</span>
+                </span>
+                <span className="font-semibold text-gray-700">
+                  {winner !== null
+                    ? <>{state.players[winner].name} <span className="text-gray-500">({val})</span></>
+                    : <span className="text-gray-400">—</span>}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Per-player breakdown */}
+      <div className="bg-white/90 p-3 rounded-lg border border-gray-300 z-10 max-w-2xl w-full overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-xs text-gray-500 uppercase border-b border-gray-200">
+              <th className="text-left p-1">Player</th>
+              <th className="p-1">📥 Pick</th>
+              <th className="p-1">🃏 Played</th>
+              <th className="p-1">⚡ Power</th>
+              <th className="p-1">🔥 Burns</th>
+              {ultimate && <th className="p-1">✂ Cuts</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {state.players.map(p => {
+              const s = state.stats[p.id] ?? { pickups: 0, cardsPlayed: 0, powerCards: 0, burns: 0, cuts: 0 };
+              return (
+                <tr key={p.id} className="border-b border-gray-100 last:border-b-0">
+                  <td className="p-1 flex items-center gap-1.5">
+                    <span className={`inline-block w-2 h-2 rounded-full ${colorFor(p.id).dot}`} />
+                    {p.name}{p.isAi && <span className="text-[10px] text-gray-500">AI</span>}
+                  </td>
+                  <td className="p-1 text-center tabular-nums">{s.pickups}</td>
+                  <td className="p-1 text-center tabular-nums">{s.cardsPlayed}</td>
+                  <td className="p-1 text-center tabular-nums">{s.powerCards}</td>
+                  <td className="p-1 text-center tabular-nums">{s.burns}</td>
+                  {ultimate && <td className="p-1 text-center tabular-nums">{s.cuts}</td>}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
       <button onClick={onPlayAgain} className="px-6 py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-lg shadow z-10">
         Play again
       </button>
@@ -1504,7 +1612,19 @@ function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; o
       ) : (
         <div className="text-gray-600">Waiting for host to start…</div>
       )}
-      <button onClick={onLeave} className="text-sm text-gray-600 underline">Leave room</button>
+      <div className="flex gap-4 items-center">
+        <button onClick={onLeave} className="text-sm text-gray-600 underline">Leave room</button>
+        {isHost && (
+          <button
+            onClick={() => {
+              if (window.confirm('Delete this room? Everyone connected will be disconnected.')) {
+                conn.send({ t: 'DELETE_ROOM' });
+              }
+            }}
+            className="text-sm text-rose-700 underline"
+          >Delete room</button>
+        )}
+      </div>
       {conn.error && <div className="text-rose-700 text-sm">{conn.error}</div>}
     </div>
   );
@@ -1578,7 +1698,7 @@ function LocalCutPromptScreen({ state, playerId, matches, onCut, onSkip }: {
   );
 }
 
-function LocalGame({ humans, ais, onExit }: { humans: number; ais: number; onExit: () => void }) {
+function LocalGame({ humans, ais, aiSpeed, onExit }: { humans: number; ais: number; aiSpeed: number; onExit: () => void }) {
   const init = useMemo(() => {
     const total = humans + ais;
     const names = [
@@ -1660,17 +1780,16 @@ function LocalGame({ humans, ais, onExit }: { humans: number; ais: number; onExi
     }
     if (aiId === null) return;
     const isCut = state.phase === 'play' && state.current !== aiId;
-    // Hold the AI for the rest of the reveal window so humans can absorb the revealed card.
     const revealDelay = state.revealedPickup
       ? Math.max(0, REVEAL_DURATION_MS - (Date.now() - state.revealedPickup.ts))
       : 0;
-    const baseDelay = isCut ? 350 : 700;
+    const baseDelay = (isCut ? 350 : 700) * aiSpeed;
     aiTimer.current = window.setTimeout(() => {
       const action = aiPickAction(state, aiId!);
       if (action) dispatch(action);
     }, Math.max(baseDelay, revealDelay));
     return () => { if (aiTimer.current) clearTimeout(aiTimer.current); };
-  }, [state, aiCutterPending]);
+  }, [state, aiCutterPending, aiSpeed]);
 
   // Skip the pass screen whenever the device doesn't actually need to change hands:
   //  - next player is AI, OR
@@ -1733,8 +1852,10 @@ function LocalGame({ humans, ais, onExit }: { humans: number; ais: number; onExi
 
   return (
     <>
-      <button onClick={onExit} className="fixed top-3 left-3 z-50 text-xs px-2 py-1 bg-white/80 border rounded">← menu</button>
-      {state.mode === 'ultimate' && <div className="fixed top-3 left-24 z-50 text-xs px-2 py-1 bg-fuchsia-100 text-fuchsia-800 border border-fuchsia-300 rounded">Ultimate</div>}
+      <div className="fixed top-3 left-3 z-50 flex flex-col items-start gap-1">
+        <button onClick={onExit} className="text-xs px-2 py-1 bg-white/80 border rounded">← menu</button>
+        {state.mode === 'ultimate' && <div className="text-[10px] px-2 py-0.5 bg-fuchsia-100 text-fuchsia-800 border border-fuchsia-300 rounded">Ultimate</div>}
+      </div>
       <ToastStack toasts={toasts} />
       {body}
       <AnimatePresence>
@@ -1797,8 +1918,10 @@ function NetworkGame({ onExit, prefilledCode }: { onExit: () => void; prefilledC
   }
   return (
     <>
-      <button onClick={() => { conn.disconnect(); onExit(); }} className="fixed top-3 left-3 z-50 text-xs px-2 py-1 bg-white/80 border rounded">← menu</button>
-      {conn.state?.mode === 'ultimate' && <div className="fixed top-3 left-24 z-50 text-xs px-2 py-1 bg-fuchsia-100 text-fuchsia-800 border border-fuchsia-300 rounded">Ultimate</div>}
+      <div className="fixed top-3 left-3 z-50 flex flex-col items-start gap-1">
+        <button onClick={() => { conn.disconnect(); onExit(); }} className="text-xs px-2 py-1 bg-white/80 border rounded">← menu</button>
+        {conn.state?.mode === 'ultimate' && <div className="text-[10px] px-2 py-0.5 bg-fuchsia-100 text-fuchsia-800 border border-fuchsia-300 rounded">Ultimate</div>}
+      </div>
       <ToastStack toasts={toasts} />
       {body}
       <AnimatePresence>
@@ -1826,20 +1949,22 @@ export default function App() {
   const [mode, setMode] = useState<AppMode>(urlRoom ? 'network' : 'menu');
   const [muted, setMuted] = useState(sfx.muted);
   const [volume, setVolume] = useState(sfx.volume);
+  const [aiSpeed, setAiSpeed] = useState(loadAiSpeed());
   const [localCfg, setLocalCfg] = useState<{ humans: number; ais: number } | null>(null);
 
   const toggleMute = (m: boolean) => { setMuted(m); sfx.setMuted(m); };
   const changeVolume = (v: number) => { setVolume(v); sfx.setVolume(v); };
+  const changeAiSpeed = (v: number) => { setAiSpeed(v); saveAiSpeed(v); };
 
   let body: React.ReactNode;
   if (mode === 'menu') body = <MenuScreen onLocal={() => setMode('localSetup')} onNetwork={() => setMode('network')} prefilledCode={urlRoom} />;
   else if (mode === 'localSetup') body = <LocalSetupScreen onStart={(h, a) => { setLocalCfg({ humans: h, ais: a }); setMode('local'); }} onBack={() => setMode('menu')} />;
-  else if (mode === 'local' && localCfg) body = <LocalGame humans={localCfg.humans} ais={localCfg.ais} onExit={() => setMode('menu')} />;
+  else if (mode === 'local' && localCfg) body = <LocalGame humans={localCfg.humans} ais={localCfg.ais} aiSpeed={aiSpeed} onExit={() => setMode('menu')} />;
   else if (mode === 'network') body = <NetworkGame onExit={() => setMode('menu')} prefilledCode={urlRoom} />;
 
   return (
     <div className="min-h-full w-full overflow-auto" style={{ background: 'radial-gradient(ellipse at top, #eef6ee 0%, #e8efe6 60%, #dde6dc 100%)' }}>
-      <SoundControls muted={muted} volume={volume} setMuted={toggleMute} setVolume={changeVolume} />
+      <SoundControls muted={muted} volume={volume} setMuted={toggleMute} setVolume={changeVolume} aiSpeed={aiSpeed} setAiSpeed={changeAiSpeed} />
       {body}
     </div>
   );

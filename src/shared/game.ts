@@ -62,6 +62,15 @@ export interface GameState {
   // revealedPickup: the chosen card, broadcast for a few seconds after the choice
   pendingReveal: { cards: Card[] } | null;
   revealedPickup: { playerId: number; card: Card; ts: number } | null;
+  stats: Record<number, PlayerStats>;
+}
+
+export interface PlayerStats {
+  pickups: number;       // pile pickups
+  cardsPlayed: number;   // total individual cards placed to pile (own turns + cuts)
+  powerCards: number;    // 2/10/8/K/7/Joker count among played cards
+  burns: number;         // burn events they triggered (10 or 4-of-a-kind)
+  cuts: number;          // out-of-turn cut plays (Ultimate mode)
 }
 
 export type Action =
@@ -240,7 +249,17 @@ export function initialState(): GameState {
     lastBurnSize: 0,
     pendingReveal: null,
     revealedPickup: null,
+    stats: {},
   };
+}
+
+const POWER_RANKS = new Set<Rank>(['2', '10', '8', 'K', '7', 'JK']);
+function emptyStats(): PlayerStats {
+  return { pickups: 0, cardsPlayed: 0, powerCards: 0, burns: 0, cuts: 0 };
+}
+function bumpStats(state: GameState, playerId: number, patch: Partial<PlayerStats>): Record<number, PlayerStats> {
+  const cur = state.stats[playerId] ?? emptyStats();
+  return { ...state.stats, [playerId]: { ...cur, ...Object.fromEntries(Object.entries(patch).map(([k, v]) => [k, (cur as any)[k] + (v as number)])) as Partial<PlayerStats> } };
 }
 
 export function newGame(playerCount: number = DEFAULT_PLAYER_COUNT, names?: string[], aiSeats?: boolean[], mode?: GameMode): GameState {
@@ -253,6 +272,8 @@ export function newGame(playerCount: number = DEFAULT_PLAYER_COUNT, names?: stri
   const intro = resolvedMode === 'ultimate'
     ? 'Ultimate mode: 2 decks, 4 jokers, cutting enabled.'
     : 'Cards dealt. Swap phase: each player may swap cards between hand and face-up.';
+  const stats: Record<number, PlayerStats> = {};
+  for (let i = 0; i < playerCount; i++) stats[i] = emptyStats();
   return {
     ...initialState(),
     phase: 'swap',
@@ -261,6 +282,7 @@ export function newGame(playerCount: number = DEFAULT_PLAYER_COUNT, names?: stri
     swapReady: Array(playerCount).fill(false),
     swapSelected,
     mode: resolvedMode,
+    stats,
     log: [intro],
   };
 }
@@ -293,12 +315,14 @@ function playCardsByIds(state: GameState, ids: string[]): GameState {
   players[state.current] = np;
 
   const ranksSummary = cards.map(c => `${c.rank}${c.suit}`).join(' + ');
+  const powerCount = cards.filter(c => POWER_RANKS.has(c.rank)).length;
   const next: GameState = {
     ...state,
     players,
     pile,
     selected: [],
     sevenRestriction: false,
+    stats: bumpStats(state, state.current, { cardsPlayed: cards.length, powerCards: powerCount }),
     log: logLine(state, `${p.name} played ${ranksSummary}.`),
   };
   return postPlay(next, state.current, src, cards);
@@ -317,10 +341,10 @@ function postPlay(stateIn: GameState, playerIdx: number, sourceUsed: Source, pla
       ...state, pile: [],
       burnedCount: state.burnedCount + burnedSize,
       lastBurnSize: burnedSize,
+      stats: bumpStats(state, playerIdx, { burns: 1 }),
       log: logLine(state, `Pile burned by 10 (${burnedSize} cards)! Turn passes.`),
     };
     pileCleared = true;
-    // 10 burns the pile but does NOT grant another turn — play continues to the next player.
     goesAgain = false;
   } else if (burnedByFour) {
     const burnedSize = state.pile.length;
@@ -328,6 +352,7 @@ function postPlay(stateIn: GameState, playerIdx: number, sourceUsed: Source, pla
       ...state, pile: [],
       burnedCount: state.burnedCount + burnedSize,
       lastBurnSize: burnedSize,
+      stats: bumpStats(state, playerIdx, { burns: 1 }),
       log: logLine(state, `Four of a kind (${burnedSize} cards)! Pile burned. Same player plays again.`),
     };
     pileCleared = true;
@@ -506,13 +531,11 @@ export function reducer(state: GameState, action: Action): GameState {
       const players = state.players.slice();
       const p = { ...players[state.current] };
       const pickedCards = state.pile.map(e => e.card);
-      // The reveal candidates are the picker's PRE-pickup hand (cards they were already holding).
-      // The picked-up pile cards were public on the table — revealing one of those is no information.
       const handBeforePickup = [...p.hand];
       p.hand = [...p.hand, ...pickedCards];
       players[state.current] = p;
+      const newStats = bumpStats(state, state.current, { pickups: 1 });
 
-      // If the picker had no cards in hand pre-pickup, there's nothing private to reveal — skip.
       if (handBeforePickup.length === 0) {
         const log = logLine(state, `${p.name} picked up the pile (${pickedCards.length} cards). No hand cards to reveal.`);
         const direction = state.direction;
@@ -520,6 +543,7 @@ export function reducer(state: GameState, action: Action): GameState {
         return {
           ...state, players, pile: [], selected: [], sevenRestriction: false, log, flippedCard: null,
           phase: 'pass', current, pendingReveal: null, revealedPickup: null, lastWasMine: false,
+          stats: newStats,
         };
       }
 
@@ -530,6 +554,7 @@ export function reducer(state: GameState, action: Action): GameState {
         pendingReveal: { cards: handBeforePickup },
         revealedPickup: null,
         lastWasMine: false,
+        stats: newStats,
       };
     }
 
@@ -651,13 +676,15 @@ function applyCut(state: GameState, cutterId: number, ids: string[]): GameState 
   // Now: the cutter is treated as the current player; postPlay handles burns/skip/etc.
   // The originally-current player effectively gets skipped (postPlay advances from cutter).
   const ranksSummary = cards.map(c => `${c.rank}${c.suit}`).join(' + ');
+  const powerCount = cards.filter(c => POWER_RANKS.has(c.rank)).length;
   const next: GameState = {
     ...state,
     players,
     pile,
     selected: [],
-    sevenRestriction: false, // cutting clears the 7-lock for whoever plays next
+    sevenRestriction: false,
     current: cutterId,
+    stats: bumpStats(state, cutterId, { cardsPlayed: cards.length, powerCards: powerCount, cuts: 1 }),
     log: logLine(state, `${cutter.name} CUT with ${ranksSummary}!`),
   };
   return postPlay(next, cutterId, 'hand', cards, /* wasCut */ true);

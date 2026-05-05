@@ -24,6 +24,7 @@ export type ServerMsg =
   | { t: 'STATE'; state: GameState; lobby: LobbyView }
   | { t: 'SESSION'; code: string; id: number; token: string; spectator?: boolean }
   | { t: 'ROOMS'; rooms: PublicRoom[] }
+  | { t: 'ROOM_CLOSED'; reason: string }
   | { t: 'ERR'; msg: string };
 
 export type ClientMsg =
@@ -38,6 +39,7 @@ export type ClientMsg =
   | { t: 'ACT'; action: Action }
   | { t: 'EMOTE'; emoji: string }
   | { t: 'PLAY_AGAIN' }
+  | { t: 'DELETE_ROOM' }
   | { t: 'LEAVE' };
 
 export interface Session {
@@ -124,6 +126,10 @@ export function useNetwork(active: boolean): NetworkConn {
           if (!s.spectator) saveSession(s);
         } else if (msg.t === 'ROOMS') {
           setRooms(msg.rooms);
+        } else if (msg.t === 'ROOM_CLOSED') {
+          setError(msg.reason);
+          setLobby(null); setState(null); setSession(null);
+          saveSession(null);
         } else if (msg.t === 'ERR') {
           setError(msg.msg);
           // If we tried to resume into a stale session, clear it.
