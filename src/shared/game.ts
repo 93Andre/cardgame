@@ -35,7 +35,7 @@ export interface Player {
   isAi?: boolean;
 }
 
-export type Phase = 'setup' | 'swap' | 'pass' | 'play' | 'flipFaceDown' | 'end';
+export type Phase = 'setup' | 'swap' | 'pass' | 'play' | 'flipFaceDown' | 'reveal' | 'end';
 export type Source = 'hand' | 'faceUp' | 'faceDown';
 export type GameMode = 'classic' | 'ultimate';
 
@@ -57,7 +57,10 @@ export interface GameState {
   mode: GameMode;
   burnedCount: number;     // total cards burned across the whole game
   lastBurnSize: number;    // size of the most recent burn (for visual flourish), 0 = no recent burn
-  // House rule: when a player picks up the pile, one random card is revealed to everyone for a few seconds.
+  // House rule: when a player picks up the pile, one card from those they picked up is revealed to everyone.
+  // pendingReveal: cards the picker can choose from (only set during 'reveal' phase)
+  // revealedPickup: the chosen card, broadcast for a few seconds after the choice
+  pendingReveal: { cards: Card[] } | null;
   revealedPickup: { playerId: number; card: Card; ts: number } | null;
 }
 
@@ -73,7 +76,8 @@ export type Action =
   | { type: 'PICKUP_PILE' }
   | { type: 'FLIP_FACEDOWN'; id: string }
   | { type: 'RESOLVE_FLIP' }
-  | { type: 'CUT'; player: number; ids: string[] };
+  | { type: 'CUT'; player: number; ids: string[] }
+  | { type: 'REVEAL_CHOICE'; id: string };
 
 export const RANK_ORDER: Rank[] = ['3', '4', '5', '6', '7', '8', '9', 'J', 'Q', 'K', 'A'];
 export const RANK_VALUE: Record<Rank, number> = {
@@ -234,6 +238,7 @@ export function initialState(): GameState {
     mode: 'classic',
     burnedCount: 0,
     lastBurnSize: 0,
+    pendingReveal: null,
     revealedPickup: null,
   };
 }
@@ -492,21 +497,17 @@ export function reducer(state: GameState, action: Action): GameState {
 
     case 'PICKUP_PILE': {
       if (state.pile.length === 0) return state;
-      const players = state.players.slice();
-      const p = { ...players[state.current] };
       const pickedCards = state.pile.map(e => e.card);
-      // House rule: reveal one random card from the pickup to all players.
-      const reveal = pickedCards[Math.floor(Math.random() * pickedCards.length)];
-      p.hand = [...p.hand, ...pickedCards];
-      players[state.current] = p;
-      const log = logLine(state, `${p.name} picked up the pile (${pickedCards.length} cards). Revealed: ${reveal.rank}${reveal.suit}.`);
-      const next: GameState = {
-        ...state, players, pile: [], selected: [], sevenRestriction: false, log, flippedCard: null,
-        revealedPickup: { playerId: state.current, card: reveal, ts: Date.now() },
+      // Cards do NOT enter the picker's hand yet. They first must reveal one to everyone.
+      // The cards are held in pendingReveal until REVEAL_CHOICE is dispatched.
+      const log = logLine(state, `${state.players[state.current].name} is picking up ${pickedCards.length} cards — choose one to reveal…`);
+      return {
+        ...state, pile: [], selected: [], sevenRestriction: false, log, flippedCard: null,
+        phase: 'reveal',
+        pendingReveal: { cards: pickedCards },
+        revealedPickup: null,
+        lastWasMine: false,
       };
-      const direction = state.direction;
-      const current = nextActiveIndex(players, state.current, direction);
-      return { ...next, current, phase: 'pass', lastWasMine: false };
     }
 
     case 'FLIP_FACEDOWN': {
@@ -538,23 +539,46 @@ export function reducer(state: GameState, action: Action): GameState {
         return postPlay(next, state.current, 'faceDown', [card]);
       } else {
         const picked = [...state.pile.map(e => e.card), card];
-        const np2: Player = { ...np, hand: [...np.hand, ...picked] };
-        players[state.current] = np2;
-        // Reveal one card to everyone (the flipped face-down card, since it was the cause).
-        const reveal = card;
-        const log = logLine(state, `${p.name} flipped ${card.rank}${card.suit} — illegal! Picks up pile (${picked.length}).`);
-        const direction = state.direction;
-        const current = nextActiveIndex(players, state.current, direction);
+        // Face-down was already removed from `np`; the picked-up cards stay in pendingReveal
+        // until REVEAL_CHOICE moves them into the player's hand.
+        players[state.current] = np;
+        const log = logLine(state, `${p.name} flipped ${card.rank}${card.suit} — illegal! Picking up ${picked.length} — choose one to reveal…`);
         return {
           ...state, players, pile: [], flippedCard: null, selected: [], sevenRestriction: false,
-          phase: 'pass', current, log, lastWasMine: false,
-          revealedPickup: { playerId: state.current, card: reveal, ts: Date.now() },
+          phase: 'reveal',
+          pendingReveal: { cards: picked },
+          revealedPickup: null,
+          log, lastWasMine: false,
         };
       }
     }
 
     case 'CUT':
       return applyCut(state, action.player, action.ids);
+
+    case 'REVEAL_CHOICE': {
+      if (state.phase !== 'reveal' || !state.pendingReveal) return state;
+      const chosen = state.pendingReveal.cards.find(c => c.id === action.id);
+      if (!chosen) return state;
+      // Now the cards officially enter the picker's hand.
+      const players = state.players.slice();
+      const picker = { ...players[state.current] };
+      picker.hand = [...picker.hand, ...state.pendingReveal.cards];
+      players[state.current] = picker;
+      const log = logLine(state, `${picker.name} revealed: ${chosen.rank}${chosen.suit} (took ${state.pendingReveal.cards.length} cards).`);
+      const direction = state.direction;
+      const current = nextActiveIndex(players, state.current, direction);
+      return {
+        ...state,
+        players,
+        phase: 'pass',
+        current,
+        pendingReveal: null,
+        revealedPickup: { playerId: state.current, card: chosen, ts: Date.now() },
+        log,
+        lastWasMine: false,
+      };
+    }
 
     default:
       return state;
@@ -632,6 +656,12 @@ export function aiPickAction(state: GameState, aiId: number): Action | null {
   }
   if (state.phase === 'flipFaceDown' && state.current === aiId) {
     return { type: 'RESOLVE_FLIP' };
+  }
+  if (state.phase === 'reveal' && state.current === aiId && state.pendingReveal) {
+    // AI picks a random card to reveal (no strategic value to optimize).
+    const cards = state.pendingReveal.cards;
+    const choice = cards[Math.floor(Math.random() * cards.length)];
+    return { type: 'REVEAL_CHOICE', id: choice.id };
   }
   // Out-of-turn cuts (Ultimate mode): AI cuts whenever it can — it's a free play.
   if (state.phase === 'play' && state.mode === 'ultimate' && state.current !== aiId) {

@@ -196,6 +196,9 @@ function actionAllowed(state: GameState, senderId: number, action: Action): bool
       // Cuts are out-of-turn. Sender must equal action.player; ultimate mode + valid match
       // is verified by the reducer itself (applyCut).
       return action.player === senderId;
+    case 'REVEAL_CHOICE':
+      // Only the player who just picked up (current) can choose what to reveal.
+      return state.current === senderId;
     default:
       return false;
   }
@@ -224,7 +227,7 @@ function scheduleAi(room: Room) {
   if (room.state.phase === 'swap') {
     const idx = room.players.findIndex(p => p.isAi && room.state && !room.state.swapReady[p.id]);
     if (idx >= 0) aiId = idx;
-  } else if ((room.state.phase === 'play' || room.state.phase === 'flipFaceDown') && room.players[room.state.current]?.isAi) {
+  } else if ((room.state.phase === 'play' || room.state.phase === 'flipFaceDown' || room.state.phase === 'reveal') && room.players[room.state.current]?.isAi) {
     aiId = room.state.current;
   } else if (room.state.phase === 'play' && room.state.mode === 'ultimate') {
     for (const p of room.players) {

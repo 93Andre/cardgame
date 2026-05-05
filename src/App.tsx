@@ -1079,6 +1079,45 @@ function EmoteBar({ onEmote }: { onEmote: (e: string) => void }) {
   );
 }
 
+function RevealChoiceScreen({ state, dispatch, viewerId }: {
+  state: GameState; dispatch: (a: Action) => void; viewerId: number | null;
+}) {
+  const cards = state.pendingReveal?.cards ?? [];
+  const picker = state.players[state.current];
+  const isMyChoice = viewerId === null
+    ? !picker?.isAi
+    : (viewerId === state.current && !picker?.isAi);
+  return (
+    <div className="h-full flex flex-col items-center justify-center gap-5 p-6">
+      <h2 className="text-2xl sm:text-3xl font-bold text-center">
+        {picker?.name} picked up the pile
+      </h2>
+      <p className="text-gray-700 text-sm text-center max-w-md">
+        {isMyChoice
+          ? `Pick ONE card to reveal to everyone. The rest stay private in your hand.`
+          : `Waiting for ${picker?.name} to choose a card to reveal…`}
+      </p>
+      <div className="flex flex-wrap gap-2 justify-center max-w-3xl">
+        {cards.map(card => (
+          <motion.div
+            key={card.id}
+            whileHover={isMyChoice ? { scale: 1.1, y: -6 } : undefined}
+            whileTap={isMyChoice ? { scale: 0.95 } : undefined}
+          >
+            <CardFace
+              card={card}
+              onClick={isMyChoice ? () => dispatch({ type: 'REVEAL_CHOICE', id: card.id }) : undefined}
+            />
+          </motion.div>
+        ))}
+      </div>
+      {!isMyChoice && picker?.isAi && (
+        <div className="text-sm text-gray-600 italic">AI is choosing…</div>
+      )}
+    </div>
+  );
+}
+
 function FlipScreen({ state, dispatch, viewerId }: {
   state: GameState; dispatch: (a: Action) => void; viewerId: number | null;
 }) {
@@ -1258,8 +1297,9 @@ function useEventEffects(log: string[], resetKey: any): { toasts: Toast[] } {
       else if (/7-or-lower/i.test(line)) { sfx.play('seven'); adds.push({ id: ++idCounter.current, text: '7-or-lower lock', tone: 'seven' }); }
       else if (/POOP HEAD/i.test(line)) { adds.push({ id: ++idCounter.current, text: '🏆 Game over!', tone: 'win' }); /* end-game sound is dispatched by Local/NetworkGame so the loser specifically hears the loss sample */ }
       else if (/CUT with/i.test(line)) { sfx.playSample(SFX_OBJECTION); adds.push({ id: ++idCounter.current, text: '✂ CUT!', tone: 'reverse' }); }
+      // Failed face-down flip — sad fahhhh sound for the bust.
+      else if (/illegal! Picking up|illegal! Picks up/i.test(line)) sfx.playSample(SFX_FAHHHH);
       else if (/^.* played /i.test(line) || /flipped face-down/i.test(line)) sfx.play('play');
-      else if (/illegal! Picks up/i.test(line)) sfx.play('pickup');
     }
     if (adds.length) {
       setToasts(t => [...t, ...adds]);
@@ -1327,7 +1367,8 @@ function LocalGame({ humans, ais, onExit }: { humans: number; ais: number; onExi
     Math.max(0, init.players.findIndex(p => !p.isAi)),
   );
   useEffect(() => {
-    if (state.phase === 'play' && !state.players[state.current]?.isAi) {
+    const followPhases = state.phase === 'play' || state.phase === 'flipFaceDown' || state.phase === 'reveal';
+    if (followPhases && !state.players[state.current]?.isAi) {
       setLocalViewerId(state.current);
     }
   }, [state.phase, state.current, state.players]);
@@ -1368,7 +1409,7 @@ function LocalGame({ humans, ais, onExit }: { humans: number; ais: number; onExi
     if (state.phase === 'swap') {
       const idx = state.players.findIndex(p => p.isAi && !state.swapReady[p.id]);
       if (idx >= 0) aiId = idx;
-    } else if ((state.phase === 'play' || state.phase === 'flipFaceDown') && state.players[state.current]?.isAi) {
+    } else if ((state.phase === 'play' || state.phase === 'flipFaceDown' || state.phase === 'reveal') && state.players[state.current]?.isAi) {
       aiId = state.current;
     } else if (state.phase === 'play' && state.mode === 'ultimate' && aiCutterPending !== undefined) {
       aiId = aiCutterPending;
@@ -1440,6 +1481,7 @@ function LocalGame({ humans, ais, onExit }: { humans: number; ais: number; onExi
         break;
       case 'play': body = <PlayScreen state={state} dispatch={dispatch} viewerId={localViewerId} />; break;
       case 'flipFaceDown': body = <FlipScreen state={state} dispatch={dispatch} viewerId={localViewerId} />; break;
+      case 'reveal': body = <RevealChoiceScreen state={state} dispatch={dispatch} viewerId={localViewerId} />; break;
       case 'end': body = <EndScreen state={state} onPlayAgain={restart} />; break;
       default: body = null;
     }
@@ -1493,6 +1535,7 @@ function NetworkGame({ onExit, prefilledCode }: { onExit: () => void; prefilledC
       case 'pass':
       case 'play': body = <PlayScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} emotes={conn.lobby?.emotes} onEmote={onEmote} />; break;
       case 'flipFaceDown': body = <FlipScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} />; break;
+      case 'reveal': body = <RevealChoiceScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} />; break;
       case 'end': {
         const isHost = conn.lobby?.myId === conn.lobby?.hostId;
         body = (
