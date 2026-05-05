@@ -1317,6 +1317,8 @@ function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; o
   const [code, setCode] = useState(prefilledCode?.toUpperCase() ?? '');
 
   if (!conn.lobby) {
+    const nameTrim = name.trim();
+    const codeTrim = code.trim();
     return (
       <div className="h-full flex flex-col items-center justify-center gap-4 p-6">
         <h2 className="text-3xl font-bold">Online multiplayer</h2>
@@ -1327,25 +1329,30 @@ function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; o
             <input value={name} onChange={e => setName(e.target.value)} placeholder="Your name"
               className="px-3 py-2 border border-gray-300 rounded" />
             <button
-              disabled={!name.trim()}
-              onClick={() => conn.send({ t: 'CREATE', name: name.trim() })}
-              className={`px-4 py-2 rounded font-semibold ${name.trim() ? 'bg-amber-500 hover:bg-amber-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
+              disabled={!nameTrim}
+              onClick={() => conn.send({ t: 'CREATE', name: nameTrim })}
+              className={`px-4 py-2 rounded font-semibold ${nameTrim ? 'bg-amber-500 hover:bg-amber-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
             >Create room</button>
             <div className="text-center text-xs text-gray-500">— or —</div>
             <input value={code} onChange={e => setCode(e.target.value.toUpperCase())} placeholder="Room code"
               className="px-3 py-2 border border-gray-300 rounded uppercase tracking-widest text-center" maxLength={4} />
             <div className="grid grid-cols-2 gap-2">
               <button
-                disabled={!name.trim() || code.length !== 4}
-                onClick={() => conn.send({ t: 'JOIN', code, name: name.trim() })}
-                className={`px-4 py-2 rounded font-semibold ${name.trim() && code.length === 4 ? 'bg-indigo-500 hover:bg-indigo-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
+                disabled={!nameTrim || codeTrim.length !== 4}
+                onClick={() => conn.send({ t: 'JOIN', code: codeTrim, name: nameTrim })}
+                className={`px-4 py-2 rounded font-semibold ${nameTrim && codeTrim.length === 4 ? 'bg-indigo-500 hover:bg-indigo-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
               >Join</button>
               <button
-                disabled={code.length !== 4}
-                onClick={() => conn.send({ t: 'SPECTATE', code })}
-                className={`px-4 py-2 rounded font-semibold ${code.length === 4 ? 'bg-gray-700 hover:bg-gray-800 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
+                disabled={codeTrim.length !== 4}
+                onClick={() => conn.send({ t: 'SPECTATE', code: codeTrim })}
+                className={`px-4 py-2 rounded font-semibold ${codeTrim.length === 4 ? 'bg-gray-700 hover:bg-gray-800 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
               >Spectate</button>
             </div>
+            {!nameTrim && <div className="text-xs text-gray-500 text-center">Enter your name first.</div>}
+            {nameTrim && codeTrim.length > 0 && codeTrim.length !== 4 && <div className="text-xs text-gray-500 text-center">Room code must be 4 characters.</div>}
+            {conn.error && (
+              <div className="text-sm text-rose-700 text-center bg-rose-50 border border-rose-200 rounded px-3 py-2">{conn.error}</div>
+            )}
           </div>
         )}
         <button onClick={onLeave} className="text-sm text-gray-600 underline">Back</button>

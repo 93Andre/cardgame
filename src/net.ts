@@ -44,6 +44,7 @@ export interface NetworkConn {
   error: string | null;
   send: (msg: ClientMsg) => void;
   disconnect: () => void;
+  clearError: () => void;
 }
 
 const SESSION_KEY = 'ph_session';
@@ -125,6 +126,8 @@ export function useNetwork(active: boolean): NetworkConn {
   const send = (msg: ClientMsg) => {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+    // Clear any previous error so a fresh attempt isn't masked by stale text.
+    setError(null);
   };
   const disconnect = () => {
     saveSession(null);
@@ -132,5 +135,6 @@ export function useNetwork(active: boolean): NetworkConn {
     try { wsRef.current?.close(); } catch { /* ignore */ }
     setLobby(null); setState(null); setStatus('closed'); setError(null);
   };
-  return { status, lobby, state, session, error, send, disconnect };
+  const clearError = () => setError(null);
+  return { status, lobby, state, session, error, send, disconnect, clearError };
 }
