@@ -1489,56 +1489,73 @@ function RevealChoiceScreen({ state, dispatch, viewerId }: {
   // these are private hand cards.
   const cards = isMyChoice ? sortCards(rawCards) : rawCards;
   return (
-    <div className="min-h-full flex flex-col items-center justify-center gap-5 p-6 bg-gradient-to-b from-amber-100/60 to-rose-100/60">
+    <div className="fixed inset-0 z-20 flex items-center justify-center p-6 overflow-hidden">
+      {/* Backdrop: dims the table behind the reveal panel */}
       <motion.div
-        initial={{ scale: 0.7, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
-        transition={{ type: 'spring', stiffness: 240 }}
-        className="flex flex-col items-center gap-2"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.25 }}
+        className="absolute inset-0 bg-stone-900/55 backdrop-blur-sm"
+      />
+
+      {/* Wiping panel: starts as a thin horizontal slit at the centre line and expands
+          vertically outward, like stage curtains opening. */}
+      <motion.div
+        initial={{ clipPath: 'inset(50% 0 50% 0)', opacity: 0 }}
+        animate={{ clipPath: 'inset(0% 0 0% 0)', opacity: 1 }}
+        transition={{ duration: 0.55, ease: [0.16, 1, 0.3, 1] }}
+        className="relative w-full max-w-3xl rounded-3xl bg-gradient-to-b from-amber-100 to-rose-100 border-2 border-amber-300 shadow-2xl p-6 sm:p-8 flex flex-col items-center gap-5"
       >
-        <div className="text-4xl">🃏</div>
-        <h2 className="text-2xl sm:text-4xl font-black text-center">
-          {picker?.name} picked up the pile
-        </h2>
-        {isMyChoice ? (
-          <p className="text-base sm:text-lg text-amber-900 font-semibold text-center max-w-xl">
-            👇 Reveal one card from <span className="underline">your hand</span> to the table. The picked-up cards have already joined your hand.
-          </p>
-        ) : (
-          <p className="text-base text-gray-700 text-center">Waiting for {picker?.name} to reveal a hand card…</p>
+        <motion.div
+          initial={{ scale: 0.6, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+          transition={{ type: 'spring', stiffness: 220, delay: 0.25 }}
+          className="flex flex-col items-center gap-2"
+        >
+          <div className="text-4xl">🃏</div>
+          <h2 className="text-2xl sm:text-4xl font-black text-center">
+            {picker?.name} picked up the pile
+          </h2>
+          {isMyChoice ? (
+            <p className="text-base sm:text-lg text-amber-900 font-semibold text-center max-w-xl">
+              👇 Reveal one card from <span className="underline">your hand</span> to the table. The picked-up cards have already joined your hand.
+            </p>
+          ) : (
+            <p className="text-base text-gray-700 text-center">Waiting for {picker?.name} to reveal a hand card…</p>
+          )}
+        </motion.div>
+
+        <div className="flex flex-wrap gap-3 justify-center max-w-5xl px-4 py-6 bg-white/70 rounded-2xl border border-amber-300 shadow-inner">
+          {cards.map((card, idx) => (
+            <motion.button
+              key={card.id}
+              type="button"
+              onClick={isMyChoice ? () => dispatch({ type: 'REVEAL_CHOICE', id: card.id }) : undefined}
+              disabled={!isMyChoice}
+              whileHover={isMyChoice ? { scale: 1.15, y: -10 } : undefined}
+              whileTap={isMyChoice ? { scale: 0.95 } : undefined}
+              initial={{ y: 28, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              transition={{ type: 'spring', stiffness: 280, damping: 22, delay: 0.3 + idx * 0.04 }}
+              className={`bg-transparent border-0 p-0 ${isMyChoice ? 'cursor-pointer' : 'cursor-default'}`}
+              aria-label={isMyChoice ? `Reveal ${card.rank}${card.suit}` : 'hidden hand card'}
+            >
+              <div className={isMyChoice ? 'ring-2 ring-amber-400 rounded-md transition-shadow hover:shadow-2xl hover:ring-4 hover:ring-amber-500' : 'opacity-80'}>
+                <CardFace card={isMyChoice ? card : undefined} hidden={!isMyChoice} />
+              </div>
+            </motion.button>
+          ))}
+        </div>
+
+        {isMyChoice && (
+          <div className="text-xs text-gray-600 italic">Tap a card from your hand to reveal it.</div>
+        )}
+        {!isMyChoice && picker?.isAi && (
+          <div className="text-sm text-gray-600 italic flex items-center gap-2">
+            <motion.span animate={{ opacity: [0.4, 1, 0.4] }} transition={{ repeat: Infinity, duration: 1.4 }}>•••</motion.span>
+            AI is choosing…
+          </div>
         )}
       </motion.div>
-
-      <div className="flex flex-wrap gap-3 justify-center max-w-5xl px-4 py-6 bg-white/60 rounded-2xl border border-amber-300 shadow-inner">
-        {cards.map(card => (
-          <motion.button
-            key={card.id}
-            type="button"
-            onClick={isMyChoice ? () => dispatch({ type: 'REVEAL_CHOICE', id: card.id }) : undefined}
-            disabled={!isMyChoice}
-            whileHover={isMyChoice ? { scale: 1.15, y: -10 } : undefined}
-            whileTap={isMyChoice ? { scale: 0.95 } : undefined}
-            initial={{ y: 20, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            transition={{ type: 'spring', stiffness: 300, damping: 22 }}
-            className={`bg-transparent border-0 p-0 ${isMyChoice ? 'cursor-pointer' : 'cursor-default'}`}
-            aria-label={isMyChoice ? `Reveal ${card.rank}${card.suit}` : 'hidden hand card'}
-          >
-            <div className={isMyChoice ? 'ring-2 ring-amber-400 rounded-md transition-shadow hover:shadow-2xl hover:ring-4 hover:ring-amber-500' : 'opacity-80'}>
-              <CardFace card={isMyChoice ? card : undefined} hidden={!isMyChoice} />
-            </div>
-          </motion.button>
-        ))}
-      </div>
-
-      {isMyChoice && (
-        <div className="text-xs text-gray-600 italic">Tap a card from your hand to reveal it.</div>
-      )}
-      {!isMyChoice && picker?.isAi && (
-        <div className="text-sm text-gray-600 italic flex items-center gap-2">
-          <motion.span animate={{ opacity: [0.4, 1, 0.4] }} transition={{ repeat: Infinity, duration: 1.4 }}>•••</motion.span>
-          AI is choosing…
-        </div>
-      )}
     </div>
   );
 }
