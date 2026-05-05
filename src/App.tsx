@@ -494,21 +494,22 @@ function CircularTable({ players, current, viewer, direction, renderPlayer, cent
   // Layout-specific dimensions. Landscape uses a wider aspect to lay tiles along the
   // long axis instead of stacking them — much better use of horizontal phone space.
   const tileWidth =
-    layout === 'desktop'  ? 'clamp(120px, 16vw, 200px)' :
+    layout === 'desktop'  ? 'clamp(130px, 17vw, 220px)' :
     layout === 'landscape' ? 'clamp(95px, 18vw, 150px)' :
                              'clamp(110px, 30vw, 180px)';
+  // Desktop omits an aspect ratio so the table can stretch to fill the
+  // available vertical space inside the parent flex column. Cap the height
+  // by viewport so the hand below still stays on-screen.
   const aspectRatio =
-    layout === 'desktop'  ? (n <= 3 ? '4 / 3' : '16 / 9') :
+    layout === 'desktop'  ? undefined :
     layout === 'landscape' ? '5 / 3' :
                              '4 / 5';
   const minHeight =
-    layout === 'desktop'  ? 280 :
+    layout === 'desktop'  ? 320 :
     layout === 'landscape' ? 280 :
                              540;
-  // On desktop, also cap by viewport height so the hand below stays on-screen
-  // without scrolling on widescreen monitors.
   const maxHeight =
-    layout === 'desktop' ? 'min(52vh, 480px)' :
+    layout === 'desktop' ? 'min(72vh, 720px)' :
                            undefined;
   const rx =
     layout === 'desktop'  ? (n <= 3 ? 0.42 : 0.45) :
@@ -521,7 +522,7 @@ function CircularTable({ players, current, viewer, direction, renderPlayer, cent
 
   return (
     <div
-      className="relative w-full mx-auto"
+      className={`relative w-full mx-auto ${layout === 'desktop' ? 'flex-1' : ''}`}
       style={{ aspectRatio, maxWidth: 1100, minHeight, maxHeight }}
     >
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full pointer-events-none overflow-visible">
