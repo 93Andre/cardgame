@@ -23,6 +23,7 @@ import {
   reducer,
 } from './shared/game';
 import { useNetwork, type NetworkConn } from './net';
+import { useHaptics } from './hooks/useHaptics';
 
 /* ============== Sound (Web Audio synth, no assets) ============== */
 
@@ -202,11 +203,13 @@ interface CardFaceProps {
   onClick?: () => void;
   dim?: boolean;
   jokerEffRank?: Rank | null;  // shown as small badge when joker copies a rank
+  magnifyOnHover?: boolean;    // desktop: scale up on hover so the user can study the card
 }
 
-function CardFace({ card, small, hidden, selected, onClick, dim, jokerEffRank }: CardFaceProps) {
+function CardFace({ card, small, hidden, selected, onClick, dim, jokerEffRank, magnifyOnHover }: CardFaceProps) {
   const w = small ? 'w-9 h-12 text-[10px] sm:w-10 sm:h-14 sm:text-xs' : 'w-14 h-20 text-sm sm:w-16 sm:h-24 sm:text-base';
-  const base = `relative ${w} rounded-md border shadow-sm flex flex-col items-center justify-center select-none transition-all`;
+  const hoverCls = magnifyOnHover ? 'hover:scale-[2] hover:z-30 hover:shadow-2xl' : '';
+  const base = `relative ${w} rounded-md border shadow-sm flex flex-col items-center justify-center select-none transition-all duration-150 ${hoverCls}`;
   if (hidden || !card) {
     return (
       <div
@@ -237,7 +240,7 @@ function CardFace({ card, small, hidden, selected, onClick, dim, jokerEffRank }:
 }
 
 function AnimatedCard(props: CardFaceProps & { layoutId?: string; fromDeck?: boolean }) {
-  const { layoutId, fromDeck, ...rest } = props;
+  const { layoutId, fromDeck, magnifyOnHover, ...rest } = props;
   const wrapperRef = useRef<HTMLDivElement>(null);
   // For fromDeck cards: compute synchronously the offset from the card's natural place
   // back to the deck's actual screen position, so the card literally flies from the deck.
@@ -270,7 +273,7 @@ function AnimatedCard(props: CardFaceProps & { layoutId?: string; fromDeck?: boo
         : { type: 'spring', stiffness: 300, damping: 28 }
       }
     >
-      <CardFace {...rest} />
+      <CardFace {...rest} magnifyOnHover={magnifyOnHover} />
     </motion.div>
   );
 }
@@ -336,7 +339,7 @@ function PlayerArea({ player, isCurrent, isViewer, faceDownClickable, onFaceDown
         </span>
       </div>
       <div className="flex gap-1 flex-wrap">
-        {player.faceUp.map(c2 => <AnimatedCard key={c2.id} layoutId={c2.id} card={c2} small />)}
+        {player.faceUp.map(c2 => <AnimatedCard key={c2.id} layoutId={c2.id} card={c2} small magnifyOnHover />)}
         {player.faceUp.length === 0 && player.faceDown.length > 0 && (
           <span className="text-[10px] text-gray-500 italic">face-up empty</span>
         )}
@@ -396,7 +399,7 @@ function CardStack({ count, top, layerCards, emptyLabel, tone = 'normal' }: {
       }}
     >
       {Array.from({ length: baseLayers }).map((_, i) => {
-        const depth = baseLayers - i;       // 1 = just under top, baseLayers = deepest visible
+        const depth = baseLayers - i;
         const offset = depth * layerStep;
         const layerCardEntry = layerCards ? layerCards[layerCards.length - depth] : undefined;
         const fallbackCls = tone === 'burned'
@@ -410,7 +413,7 @@ function CardStack({ count, top, layerCards, emptyLabel, tone = 'normal' }: {
             style={{ top: offset, left: offset, filter: `brightness(${1 - depth * 0.05})` }}
           >
             {layerCardEntry
-              ? <CardFace card={layerCardEntry.card} jokerEffRank={layerCardEntry.effRank} />
+              ? <CardFace card={layerCardEntry.card} jokerEffRank={layerCardEntry.effRank} magnifyOnHover />
               : <div className={`w-14 h-20 sm:w-16 sm:h-24 rounded-md border ${fallbackCls}`} />
             }
           </div>
@@ -980,9 +983,9 @@ function HowToPlay() {
 function MenuScreen({ onLocal, onNetwork, prefilledCode }: { onLocal: () => void; onNetwork: (code?: string) => void; prefilledCode?: string }) {
   return (
     <div className="min-h-full flex flex-col items-center justify-center gap-5 p-6">
-      <h1 className="text-4xl sm:text-5xl font-black tracking-tight">💩 Poop Head</h1>
+      <h1 className="text-4xl sm:text-5xl font-black tracking-tight">💩 Latrine</h1>
       <p className="max-w-xl text-center text-gray-700 text-sm sm:text-base">
-        A shedding card game. Get rid of all your cards. Last one holding cards is the Poop Head.
+        A shedding card game. Get rid of all your cards. Last one holding cards is the Poop Head 💩.
       </p>
       <div className="flex flex-col sm:flex-row gap-3">
         <button onClick={onLocal} className="px-6 py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-lg shadow">
@@ -1699,6 +1702,7 @@ function useEventEffects(log: string[], resetKey: any): { toasts: Toast[] } {
   const lastLen = useRef(0);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const idCounter = useRef(0);
+  const haptic = useHaptics();
 
   useEffect(() => { lastLen.current = 0; setToasts([]); }, [resetKey]);
 
@@ -1707,25 +1711,24 @@ function useEventEffects(log: string[], resetKey: any): { toasts: Toast[] } {
     lastLen.current = log.length;
     const adds: Toast[] = [];
     for (const line of newLines) {
-      if (/Pile burned by 10/i.test(line)) { sfx.play('burn'); adds.push({ id: ++idCounter.current, text: '🔥 Pile burned!', tone: 'burn' }); }
-      else if (/Four of a kind/i.test(line)) { sfx.play('burn'); adds.push({ id: ++idCounter.current, text: '🔥 Four of a kind!', tone: 'burn' }); }
-      else if (/picked up the pile/i.test(line)) sfx.play('pickup');
-      else if (/pile reset/i.test(line)) { sfx.play('reset'); adds.push({ id: ++idCounter.current, text: '🔄 Pile reset', tone: 'reset' }); }
-      else if (/direction reversed/i.test(line)) { sfx.play('reverse'); adds.push({ id: ++idCounter.current, text: '↺ Reverse!', tone: 'reverse' }); }
-      else if (/skipped/i.test(line)) { sfx.play('skip'); adds.push({ id: ++idCounter.current, text: '⏭ Skip!', tone: 'skip' }); }
-      else if (/7-or-lower/i.test(line)) { sfx.play('seven'); adds.push({ id: ++idCounter.current, text: '7-or-lower lock', tone: 'seven' }); }
-      else if (/POOP HEAD/i.test(line)) { adds.push({ id: ++idCounter.current, text: '🏆 Game over!', tone: 'win' }); /* end-game sound is dispatched by Local/NetworkGame so the loser specifically hears the loss sample */ }
-      else if (/CUT with/i.test(line)) { sfx.playSample(SFX_OBJECTION); adds.push({ id: ++idCounter.current, text: '✂ CUT!', tone: 'reverse' }); }
-      // Failed face-down flip — sad fahhhh sound for the bust.
-      else if (/illegal! Picking up|illegal! Picks up/i.test(line)) sfx.playSample(SFX_FAHHHH);
-      else if (/^.* played /i.test(line) || /flipped face-down/i.test(line)) sfx.play('play');
+      if (/Pile burned by 10/i.test(line)) { sfx.play('burn'); haptic('burn'); adds.push({ id: ++idCounter.current, text: '🔥 Pile burned!', tone: 'burn' }); }
+      else if (/Four of a kind/i.test(line)) { sfx.play('burn'); haptic('burn'); adds.push({ id: ++idCounter.current, text: '🔥 Four of a kind!', tone: 'burn' }); }
+      else if (/picked up the pile/i.test(line)) { sfx.play('pickup'); haptic('pickup'); }
+      else if (/pile reset/i.test(line)) { sfx.play('reset'); haptic('play'); adds.push({ id: ++idCounter.current, text: '🔄 Pile reset', tone: 'reset' }); }
+      else if (/direction reversed/i.test(line)) { sfx.play('reverse'); haptic('play'); adds.push({ id: ++idCounter.current, text: '↺ Reverse!', tone: 'reverse' }); }
+      else if (/skipped/i.test(line)) { sfx.play('skip'); haptic('play'); adds.push({ id: ++idCounter.current, text: '⏭ Skip!', tone: 'skip' }); }
+      else if (/7-or-lower/i.test(line)) { sfx.play('seven'); haptic('play'); adds.push({ id: ++idCounter.current, text: '7-or-lower lock', tone: 'seven' }); }
+      else if (/POOP HEAD/i.test(line)) { haptic('win'); adds.push({ id: ++idCounter.current, text: '🏆 Game over!', tone: 'win' }); }
+      else if (/CUT with/i.test(line)) { sfx.playSample(SFX_OBJECTION); haptic('cut'); adds.push({ id: ++idCounter.current, text: '✂ CUT!', tone: 'reverse' }); }
+      else if (/illegal! Picking up|illegal! Picks up/i.test(line)) { sfx.playSample(SFX_FAHHHH); haptic('error'); }
+      else if (/^.* played /i.test(line) || /flipped face-down/i.test(line)) { sfx.play('play'); haptic('play'); }
     }
     if (adds.length) {
       setToasts(t => [...t, ...adds]);
       const ids = adds.map(a => a.id);
       setTimeout(() => setToasts(t => t.filter(x => !ids.includes(x.id))), 2500);
     }
-  }, [log]);
+  }, [log, haptic]);
 
   return { toasts };
 }

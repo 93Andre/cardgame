@@ -1,5 +1,5 @@
 /* =============================================================
- * Poop Head — shared game module (no DOM/React deps).
+ * Latrine — shared game module (no DOM/React deps).
  * Imported by both the React client and the Node WebSocket server.
  * ============================================================= */
 

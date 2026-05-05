@@ -1,0 +1,16 @@
+{
+  "name": "Latrine",
+  "short_name": "Latrine",
+  "description": "A shedding card game. Last player holding cards is the Poop Head.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#e8efe6",
+  "theme_color": "#a78bfa",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ],
+  "categories": ["games"]
+}

@@ -1,6 +1,6 @@
-# cardgame
+# Latrine 💩
 
-Poop Head — a web-based shedding card game (variant of Shithead/Palace/Karma). Local hot-seat or networked multiplayer with AI opponents, cutting (Ultimate mode at 4+ players), and reveal-on-pickup.
+A web-based shedding card game (variant of Shithead/Palace/Karma). Local hot-seat or networked multiplayer with AI opponents, cutting (Ultimate mode at 4+ players), and reveal-on-pickup. Last player holding cards is crowned the **Poop Head**.
 
 ## Quick start (local dev)
 
