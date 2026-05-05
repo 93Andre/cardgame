@@ -887,12 +887,15 @@ function RevealOverlay({ playerName, card }: { playerName: string; card: Card })
 }
 
 // Detect cards newly added to the viewer's hand specifically because the deck shrank.
-// Maintains a stateful Set that stays populated for the duration of the fly-in animation
-// so the DeckDrawOverlay has time to show the visual journey.
+// Each newly-drawn card gets its own timer so subsequent state changes (other players'
+// turns landing while my fly-in is still running) don't cancel the cleanup and leak the
+// card-back overlay.
 const FLY_DURATION_MS = 700;
 function useFromDeckTracker(state: GameState | null, viewerId: number): Set<string> {
   const [active, setActive] = useState<Set<string>>(new Set());
   const prev = useRef<{ hand: Set<string>; deck: number }>({ hand: new Set(), deck: 0 });
+  const timersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
   useEffect(() => {
     if (!state) return;
     const player = state.players[viewerId];
@@ -905,18 +908,34 @@ function useFromDeckTracker(state: GameState | null, viewerId: number): Set<stri
     const drewFromDeck = state.deck.length < prev.current.deck;
     prev.current = { hand: cur, deck: state.deck.length };
     if (drewFromDeck && newOnes.length > 0) {
-      setActive(s => new Set([...s, ...newOnes]));
-      const ids = newOnes;
-      const t = setTimeout(() => {
-        setActive(s => {
-          const next = new Set(s);
-          for (const id of ids) next.delete(id);
-          return next;
-        });
-      }, FLY_DURATION_MS + 100);
-      return () => clearTimeout(t);
+      setActive(s => {
+        const next = new Set(s);
+        for (const id of newOnes) next.add(id);
+        return next;
+      });
+      for (const id of newOnes) {
+        const t = setTimeout(() => {
+          setActive(s => {
+            if (!s.has(id)) return s;
+            const next = new Set(s);
+            next.delete(id);
+            return next;
+          });
+          timersRef.current.delete(id);
+        }, FLY_DURATION_MS + 200);
+        timersRef.current.set(id, t);
+      }
     }
   }, [state, viewerId]);
+
+  useEffect(() => {
+    const timers = timersRef.current;
+    return () => {
+      for (const t of timers.values()) clearTimeout(t);
+      timers.clear();
+    };
+  }, []);
+
   return active;
 }
 
