@@ -21,6 +21,7 @@ export interface Card {
 export interface PileEntry {
   card: Card;
   effRank: Rank;
+  effSuit: Suit;  // resolved suit (jokers copy from below) — needed for Ultimate-mode cutting
 }
 
 export interface Player {
@@ -31,10 +32,12 @@ export interface Player {
   faceDown: Card[];
   out: boolean;
   finishPos: number | null;
+  isAi?: boolean;
 }
 
 export type Phase = 'setup' | 'swap' | 'pass' | 'play' | 'flipFaceDown' | 'end';
 export type Source = 'hand' | 'faceUp' | 'faceDown';
+export type GameMode = 'classic' | 'ultimate';
 
 export interface GameState {
   phase: Phase;
@@ -51,19 +54,24 @@ export interface GameState {
   flippedCard: Card | null;
   lastWasMine: boolean;
   poopHead: number | null;
+  mode: GameMode;
+  burnedCount: number;     // total cards burned across the whole game
+  lastBurnSize: number;    // size of the most recent burn (for visual flourish), 0 = no recent burn
 }
 
 export type Action =
-  | { type: 'NEW_GAME'; playerCount?: number; names?: string[] }
+  | { type: 'NEW_GAME'; playerCount?: number; names?: string[]; aiSeats?: boolean[]; mode?: GameMode }
   | { type: 'SWAP_PICK'; player: number; source: Source; id: string }
   | { type: 'SWAP_READY'; player: number }
   | { type: 'BEGIN_PLAY' }
   | { type: 'ACK_PASS' }
   | { type: 'TOGGLE_SELECT'; id: string }
   | { type: 'PLAY_SELECTED' }
+  | { type: 'PLAY_CARDS'; ids: string[] }
   | { type: 'PICKUP_PILE' }
   | { type: 'FLIP_FACEDOWN'; id: string }
-  | { type: 'RESOLVE_FLIP' };
+  | { type: 'RESOLVE_FLIP' }
+  | { type: 'CUT'; player: number; ids: string[] };
 
 export const RANK_ORDER: Rank[] = ['3', '4', '5', '6', '7', '8', '9', 'J', 'Q', 'K', 'A'];
 export const RANK_VALUE: Record<Rank, number> = {
@@ -74,13 +82,17 @@ export const RANK_VALUE: Record<Rank, number> = {
 
 /* ----- Deck ----- */
 
-export function createDeck(): Card[] {
+export function createDeck(useTwoDecks = false): Card[] {
   const suits: Suit[] = ['♠', '♥', '♦', '♣'];
   const ranks: Rank[] = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
   const cards: Card[] = [];
-  for (const s of suits) for (const r of ranks) cards.push({ id: `${r}${s}`, rank: r, suit: s });
-  cards.push({ id: 'JK1', rank: 'JK', suit: '★' });
-  cards.push({ id: 'JK2', rank: 'JK', suit: '★' });
+  const decks = useTwoDecks ? 2 : 1;
+  for (let d = 1; d <= decks; d++) {
+    const suffix = d === 1 ? '' : '·d2';
+    for (const s of suits) for (const r of ranks) cards.push({ id: `${r}${s}${suffix}`, rank: r, suit: s });
+    cards.push({ id: `JK${d * 2 - 1}`, rank: 'JK', suit: '★' });
+    cards.push({ id: `JK${d * 2}`, rank: 'JK', suit: '★' });
+  }
   return cards;
 }
 
@@ -93,7 +105,7 @@ export function shuffle<T>(arr: T[]): T[] {
   return a;
 }
 
-export function deal(deck: Card[], playerCount: number, names?: string[]): { players: Player[]; deck: Card[] } {
+export function deal(deck: Card[], playerCount: number, names?: string[], aiSeats?: boolean[]): { players: Player[]; deck: Card[] } {
   const d = deck.slice();
   const players: Player[] = [];
   for (let i = 0; i < playerCount; i++) {
@@ -105,6 +117,7 @@ export function deal(deck: Card[], playerCount: number, names?: string[]): { pla
       hand: d.splice(0, HAND_TARGET),
       out: false,
       finishPos: null,
+      isAi: aiSeats?.[i] ?? false,
     });
   }
   return { players, deck: d };
@@ -112,10 +125,15 @@ export function deal(deck: Card[], playerCount: number, names?: string[]): { pla
 
 /* ----- Pure logic ----- */
 
+export function resolveEffective(card: Card, pileBefore: PileEntry[]): { effRank: Rank; effSuit: Suit } {
+  if (card.rank !== 'JK') return { effRank: card.rank, effSuit: card.suit };
+  if (pileBefore.length === 0) return { effRank: '3', effSuit: '★' };
+  const below = pileBefore[pileBefore.length - 1];
+  return { effRank: below.effRank, effSuit: below.effSuit };
+}
+
 export function resolveEffRank(card: Card, pileBefore: PileEntry[]): Rank {
-  if (card.rank !== 'JK') return card.rank;
-  if (pileBefore.length === 0) return '3';
-  return pileBefore[pileBefore.length - 1].effRank;
+  return resolveEffective(card, pileBefore).effRank;
 }
 
 export function topEffRank(pile: PileEntry[]): Rank | null {
@@ -141,18 +159,24 @@ export function canPlayCards(cards: Card[], pile: PileEntry[], sevenLock: boolea
   if (nonJokerRanks.size > 1) return false;
   const baseRank: Rank = nonJokerRanks.size === 0 ? 'JK' : ([...nonJokerRanks][0] as Rank);
   const top = topEffRank(pile);
+  // 2/10/Joker are always playable (exempt from both ≥-top and 7-lock rules).
   if (baseRank === '2' || baseRank === '10' || baseRank === 'JK') return true;
   if (top === null) return true;
-  if (sevenLock && RANK_VALUE[baseRank] > 7) return false;
+  // 7-lock inverts the rule: must play ≤7 (NOT ≥top).
+  if (sevenLock) return RANK_VALUE[baseRank] <= 7;
   return RANK_VALUE[baseRank] >= RANK_VALUE[top];
 }
 
+// Four-of-a-kind burn: uses the ACTUAL rank, not the effective rank. So a Joker
+// copying a 7 does NOT contribute to a four-of-a-kind of 7s — only four real jokers
+// (rank === 'JK') burn as a joker quad.
 export function isFourOfAKind(pile: PileEntry[]): boolean {
   if (pile.length < 4) return false;
-  const r = pile[pile.length - 1].effRank;
+  const top = pile[pile.length - 1];
+  const r = top.card.rank;
   if (r === '2' || r === '10') return false;
   for (let i = pile.length - 4; i < pile.length - 1; i++) {
-    if (pile[i].effRank !== r) return false;
+    if (pile[i].card.rank !== r) return false;
   }
   return true;
 }
@@ -205,13 +229,22 @@ export function initialState(): GameState {
     flippedCard: null,
     lastWasMine: false,
     poopHead: null,
+    mode: 'classic',
+    burnedCount: 0,
+    lastBurnSize: 0,
   };
 }
 
-export function newGame(playerCount: number = DEFAULT_PLAYER_COUNT, names?: string[]): GameState {
-  const { players, deck } = deal(shuffle(createDeck()), playerCount, names);
+export function newGame(playerCount: number = DEFAULT_PLAYER_COUNT, names?: string[], aiSeats?: boolean[], mode?: GameMode): GameState {
+  // Auto-activate Ultimate at 4+ players unless caller forces classic.
+  const resolvedMode: GameMode = mode ?? (playerCount >= 4 ? 'ultimate' : 'classic');
+  const useTwoDecks = resolvedMode === 'ultimate';
+  const { players, deck } = deal(shuffle(createDeck(useTwoDecks)), playerCount, names, aiSeats);
   const swapSelected: Record<number, null> = {};
   for (let i = 0; i < playerCount; i++) swapSelected[i] = null;
+  const intro = resolvedMode === 'ultimate'
+    ? 'Ultimate mode: 2 decks, 4 jokers, cutting enabled.'
+    : 'Cards dealt. Swap phase: each player may swap cards between hand and face-up.';
   return {
     ...initialState(),
     phase: 'swap',
@@ -219,12 +252,48 @@ export function newGame(playerCount: number = DEFAULT_PLAYER_COUNT, names?: stri
     deck,
     swapReady: Array(playerCount).fill(false),
     swapSelected,
-    log: ['Cards dealt. Swap phase: each player may swap cards between hand and face-up.'],
+    mode: resolvedMode,
+    log: [intro],
   };
 }
 
 function logLine(state: GameState, line: string): string[] {
   return [...state.log, line].slice(-50);
+}
+
+function playCardsByIds(state: GameState, ids: string[]): GameState {
+  const p = state.players[state.current];
+  const src = activeSource(p, state.deck.length === 0);
+  if (!src || src === 'faceDown') return state;
+  if (ids.length === 0) return state;
+  const list = cardsFromSource(p, src);
+  const cards = ids.map(id => list.find(c => c.id === id)!).filter(Boolean) as Card[];
+  if (cards.length !== ids.length) return state;
+  if (!canPlayCards(cards, state.pile, state.sevenRestriction)) return state;
+
+  let pile = state.pile.slice();
+  for (const c of cards) {
+    const eff = resolveEffective(c, pile);
+    pile = [...pile, { card: c, effRank: eff.effRank, effSuit: eff.effSuit }];
+  }
+
+  const players = state.players.slice();
+  const updatedSrc = list.filter(c => !ids.includes(c.id));
+  const np: Player = { ...p };
+  if (src === 'hand') np.hand = updatedSrc;
+  else np.faceUp = updatedSrc;
+  players[state.current] = np;
+
+  const ranksSummary = cards.map(c => `${c.rank}${c.suit}`).join(' + ');
+  const next: GameState = {
+    ...state,
+    players,
+    pile,
+    selected: [],
+    sevenRestriction: false,
+    log: logLine(state, `${p.name} played ${ranksSummary}.`),
+  };
+  return postPlay(next, state.current, src, cards);
 }
 
 function postPlay(stateIn: GameState, playerIdx: number, sourceUsed: Source, played: Card[]): GameState {
@@ -235,13 +304,29 @@ function postPlay(stateIn: GameState, playerIdx: number, sourceUsed: Source, pla
   let goesAgain = false;
 
   if (burnedByTen) {
-    state = { ...state, pile: [], log: logLine(state, 'Pile burned by 10! Same player plays again.') };
+    const burnedSize = state.pile.length;
+    state = {
+      ...state, pile: [],
+      burnedCount: state.burnedCount + burnedSize,
+      lastBurnSize: burnedSize,
+      log: logLine(state, `Pile burned by 10 (${burnedSize} cards)! Turn passes.`),
+    };
     pileCleared = true;
-    goesAgain = true;
+    // 10 burns the pile but does NOT grant another turn — play continues to the next player.
+    goesAgain = false;
   } else if (burnedByFour) {
-    state = { ...state, pile: [], log: logLine(state, 'Four of a kind! Pile burned. Same player plays again.') };
+    const burnedSize = state.pile.length;
+    state = {
+      ...state, pile: [],
+      burnedCount: state.burnedCount + burnedSize,
+      lastBurnSize: burnedSize,
+      log: logLine(state, `Four of a kind (${burnedSize} cards)! Pile burned. Same player plays again.`),
+    };
     pileCleared = true;
     goesAgain = true;
+  } else {
+    // No burn this play — clear the lastBurnSize flourish so it doesn't linger.
+    state = { ...state, lastBurnSize: 0 };
   }
 
   if (sourceUsed === 'hand' && state.deck.length > 0) {
@@ -312,7 +397,7 @@ function postPlay(stateIn: GameState, playerIdx: number, sourceUsed: Source, pla
 export function reducer(state: GameState, action: Action): GameState {
   switch (action.type) {
     case 'NEW_GAME':
-      return newGame(action.playerCount ?? DEFAULT_PLAYER_COUNT, action.names);
+      return newGame(action.playerCount ?? DEFAULT_PLAYER_COUNT, action.names, action.aiSeats, action.mode);
 
     case 'SWAP_PICK': {
       const { player, source, id } = action;
@@ -396,38 +481,11 @@ export function reducer(state: GameState, action: Action): GameState {
       return { ...state, selected: [...state.selected, action.id] };
     }
 
-    case 'PLAY_SELECTED': {
-      const p = state.players[state.current];
-      const src = activeSource(p, state.deck.length === 0);
-      if (!src || src === 'faceDown') return state;
-      if (state.selected.length === 0) return state;
-      const list = cardsFromSource(p, src);
-      const cards = state.selected.map(id => list.find(c => c.id === id)!).filter(Boolean) as Card[];
-      if (!canPlayCards(cards, state.pile, state.sevenRestriction)) return state;
+    case 'PLAY_SELECTED':
+      return playCardsByIds(state, state.selected);
 
-      let pile = state.pile.slice();
-      for (const c of cards) {
-        pile = [...pile, { card: c, effRank: resolveEffRank(c, pile) }];
-      }
-
-      const players = state.players.slice();
-      const updatedSrc = list.filter(c => !state.selected.includes(c.id));
-      const np: Player = { ...p };
-      if (src === 'hand') np.hand = updatedSrc;
-      else np.faceUp = updatedSrc;
-      players[state.current] = np;
-
-      const ranksSummary = cards.map(c => `${c.rank}${c.suit}`).join(' + ');
-      const next: GameState = {
-        ...state,
-        players,
-        pile,
-        selected: [],
-        sevenRestriction: false,
-        log: logLine(state, `${p.name} played ${ranksSummary}.`),
-      };
-      return postPlay(next, state.current, src, cards);
-    }
+    case 'PLAY_CARDS':
+      return playCardsByIds(state, action.ids);
 
     case 'PICKUP_PILE': {
       if (state.pile.length === 0) return state;
@@ -464,7 +522,8 @@ export function reducer(state: GameState, action: Action): GameState {
       const legal = canPlayCards([card], state.pile, state.sevenRestriction);
       if (legal) {
         let pile = state.pile.slice();
-        pile = [...pile, { card, effRank: resolveEffRank(card, pile) }];
+        const eff = resolveEffective(card, pile);
+        pile = [...pile, { card, effRank: eff.effRank, effSuit: eff.effSuit }];
         const next: GameState = {
           ...state, players, pile, flippedCard: null, selected: [],
           log: logLine(state, `${p.name} flipped face-down ${card.rank}${card.suit} — legal!`),
@@ -484,9 +543,124 @@ export function reducer(state: GameState, action: Action): GameState {
       }
     }
 
+    case 'CUT':
+      return applyCut(state, action.player, action.ids);
+
     default:
       return state;
   }
+}
+
+/* ----- Ultimate-mode cutting ----- */
+
+// What card+suit must a cutter match? Top of pile (effective rank+suit, jokers resolved).
+// Returns null if the pile is empty (no cuts on empty pile).
+export function cutTarget(pile: PileEntry[]): { rank: Rank; suit: Suit } | null {
+  if (pile.length === 0) return null;
+  const top = pile[pile.length - 1];
+  return { rank: top.effRank, suit: top.effSuit };
+}
+
+// All matching cards in player's HAND that could be used to cut. Hand-only per rules.
+export function cutMatches(state: GameState, playerId: number): Card[] {
+  if (state.mode !== 'ultimate') return [];
+  if (state.phase !== 'play') return [];
+  const target = cutTarget(state.pile);
+  if (!target) return [];
+  const p = state.players[playerId];
+  if (!p || p.out) return [];
+  return p.hand.filter(c => c.rank === target.rank && c.suit === target.suit);
+}
+
+function applyCut(state: GameState, cutterId: number, ids: string[]): GameState {
+  if (state.mode !== 'ultimate') return state;
+  if (state.phase !== 'play') return state;
+  if (ids.length === 0) return state;
+  const matches = cutMatches(state, cutterId);
+  const matchIds = new Set(matches.map(c => c.id));
+  // Every id in the request must be a valid match in the cutter's hand.
+  for (const id of ids) if (!matchIds.has(id)) return state;
+  const cutter = state.players[cutterId];
+  const cards = ids.map(id => cutter.hand.find(c => c.id === id)!).filter(Boolean) as Card[];
+
+  // Remove the cards from cutter's hand.
+  const newHand = cutter.hand.filter(c => !ids.includes(c.id));
+  const players = state.players.slice();
+  players[cutterId] = { ...cutter, hand: newHand };
+
+  // Place cards onto pile (each entry computed against the growing pile).
+  let pile = state.pile.slice();
+  for (const c of cards) {
+    const eff = resolveEffective(c, pile);
+    pile = [...pile, { card: c, effRank: eff.effRank, effSuit: eff.effSuit }];
+  }
+
+  // Now: the cutter is treated as the current player; postPlay handles burns/skip/etc.
+  // The originally-current player effectively gets skipped (postPlay advances from cutter).
+  const ranksSummary = cards.map(c => `${c.rank}${c.suit}`).join(' + ');
+  const next: GameState = {
+    ...state,
+    players,
+    pile,
+    selected: [],
+    sevenRestriction: false, // cutting clears the 7-lock for whoever plays next
+    current: cutterId,
+    log: logLine(state, `${cutter.name} CUT with ${ranksSummary}!`),
+  };
+  return postPlay(next, cutterId, 'hand', cards);
+}
+
+/* ----- AI ----- */
+
+const SPECIAL_RANKS = new Set<Rank>(['2', '10', 'JK']);
+
+// Decide the next action for an AI player. Returns null if AI shouldn't act now.
+export function aiPickAction(state: GameState, aiId: number): Action | null {
+  if (state.phase === 'swap') {
+    if (!state.swapReady[aiId]) return { type: 'SWAP_READY', player: aiId };
+    return null;
+  }
+  if (state.phase === 'flipFaceDown' && state.current === aiId) {
+    return { type: 'RESOLVE_FLIP' };
+  }
+  // Out-of-turn cuts (Ultimate mode): AI cuts whenever it can — it's a free play.
+  if (state.phase === 'play' && state.mode === 'ultimate' && state.current !== aiId) {
+    const matches = cutMatches(state, aiId);
+    if (matches.length > 0) return { type: 'CUT', player: aiId, ids: matches.map(c => c.id) };
+    return null;
+  }
+  if (state.phase === 'play' && state.current === aiId) {
+    // On its own turn, AI may also cut (rare — would only matter if its top-card was just played by someone else).
+    if (state.mode === 'ultimate') {
+      const matches = cutMatches(state, aiId);
+      if (matches.length > 0) return { type: 'CUT', player: aiId, ids: matches.map(c => c.id) };
+    }
+    const p = state.players[aiId];
+    const src = activeSource(p, state.deck.length === 0);
+    if (!src) return null;
+    if (src === 'faceDown') {
+      const card = p.faceDown[Math.floor(Math.random() * p.faceDown.length)];
+      return { type: 'FLIP_FACEDOWN', id: card.id };
+    }
+    const cards = cardsFromSource(p, src);
+    const legal = cards.filter(c => canPlayCards([c], state.pile, state.sevenRestriction));
+    if (legal.length === 0) return { type: 'PICKUP_PILE' };
+    // Group legal cards by rank, prefer non-special, then lowest rank value.
+    const byRank = new Map<Rank, Card[]>();
+    for (const c of legal) {
+      const arr = byRank.get(c.rank) ?? [];
+      arr.push(c);
+      byRank.set(c.rank, arr);
+    }
+    const ranks = [...byRank.keys()].sort((a, b) => {
+      const sa = SPECIAL_RANKS.has(a), sb = SPECIAL_RANKS.has(b);
+      if (sa !== sb) return sa ? 1 : -1;
+      return RANK_VALUE[a] - RANK_VALUE[b];
+    });
+    const chosen = byRank.get(ranks[0])!;
+    return { type: 'PLAY_CARDS', ids: chosen.map(c => c.id) };
+  }
+  return null;
 }
 
 /* ----- Redaction (server → per-player view) ----- */
