@@ -1130,8 +1130,8 @@ function HowToPlay() {
 function MenuScreen({ onLocal, onNetwork, prefilledCode }: { onLocal: () => void; onNetwork: (code?: string) => void; prefilledCode?: string }) {
   return (
     <div className="min-h-full flex flex-col items-center justify-center gap-5 p-6">
-      <h1 className="text-4xl sm:text-5xl font-black tracking-tight">💩 Latrine</h1>
-      <p className="max-w-xl text-center text-gray-700 text-sm sm:text-base">
+      <h1 className="text-4xl sm:text-5xl font-black tracking-tight text-white drop-shadow-md">💩 Latrine</h1>
+      <p className="max-w-xl text-center text-white/85 text-sm sm:text-base">
         A shedding card game. Get rid of all your cards. Last one holding cards is the Poop Head 💩.
       </p>
       <div className="flex flex-col sm:flex-row gap-3">
@@ -1154,7 +1154,7 @@ function LocalSetupScreen({ onStart, onBack }: { onStart: (humans: number, ais: 
   const valid = humans >= 1 && total >= MIN_PLAYERS && total <= MAX_PLAYERS;
   return (
     <div className="h-full flex flex-col items-center justify-center gap-6 p-6">
-      <h2 className="text-3xl font-bold">Local game setup</h2>
+      <h2 className="text-3xl font-bold text-white drop-shadow">Local game setup</h2>
       <div className="flex flex-col gap-4 bg-white/70 p-6 rounded-lg border border-gray-300 w-80">
         <label className="flex items-center justify-between">
           <span>Humans (hot-seat)</span>
@@ -1190,9 +1190,9 @@ function SwapScreen({ state, dispatch, viewerId }: {
   const allReady = state.swapReady.every(Boolean);
   const isNetwork = viewerId !== null && viewerId !== -1;
   return (
-    <div className="p-3 sm:p-4 flex flex-col gap-4">
-      <h2 className="text-xl sm:text-2xl font-bold">Swap phase</h2>
-      <p className="text-xs sm:text-sm text-gray-600">
+    <div className="p-3 sm:p-4 pt-14 flex flex-col gap-4">
+      <h2 className="text-xl sm:text-2xl font-bold text-white drop-shadow">Swap phase</h2>
+      <p className="text-xs sm:text-sm text-white/80">
         Click a hand card, then a face-up card (or vice versa) to swap. Click <em>Ready</em> when done.
         {isNetwork ? ' Each player swaps independently.' : ' Pass the device between players.'}
       </p>
@@ -1255,8 +1255,8 @@ function PassScreen({ state, dispatch }: { state: GameState; dispatch: (a: Actio
   const p = state.players[state.current];
   return (
     <div className="h-full flex flex-col items-center justify-center gap-6 p-6">
-      <h2 className="text-3xl font-bold">Pass the device to {p.name}</h2>
-      <p className="text-gray-700">The previous player's hand is hidden.</p>
+      <h2 className="text-3xl font-bold text-white drop-shadow">Pass the device to {p.name}</h2>
+      <p className="text-white/80">The previous player's hand is hidden.</p>
       <button onClick={() => dispatch({ type: 'ACK_PASS' })} className="px-6 py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-lg shadow">
         Start {p.name}'s turn
       </button>
@@ -1357,12 +1357,12 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
             );
           })()}
 
-          <div className="border-t pt-3 mx-auto w-full max-w-3xl">
+          <div className="border-t border-white/15 pt-3 mx-auto w-full max-w-3xl">
             <div className="flex items-center justify-between mb-2">
-              <div className="text-xs sm:text-sm text-gray-600">
+              <div className="text-xs sm:text-sm text-white/85">
                 {isSpectator && <>Spectating — {state.players[state.current]?.name}'s turn</>}
                 {!isSpectator && !isMyTurn && <>Waiting for {state.players[state.current].name}…</>}
-                {isMyTurn && src === 'hand' && <>Your hand: <span className="text-gray-400">(1-9 to select, Enter play, P pickup)</span></>}
+                {isMyTurn && src === 'hand' && <>Your hand: <span className="text-white/60">(1-9 to select, Enter play, P pickup)</span></>}
                 {isMyTurn && src === 'faceUp' && <>Hand & deck empty — playing from face-up.</>}
                 {isMyTurn && src === 'faceDown' && <>Pick a face-down card to flip.</>}
               </div>
@@ -2201,7 +2201,7 @@ export default function App() {
   else if (mode === 'network') body = <NetworkGame onExit={() => setMode('menu')} prefilledCode={urlRoom} />;
 
   return (
-    <div className="min-h-full w-full overflow-auto" style={{ background: 'radial-gradient(ellipse at top, #eef6ee 0%, #e8efe6 60%, #dde6dc 100%)' }}>
+    <div className="min-h-full w-full overflow-auto">
       <SoundControls muted={muted} volume={volume} setMuted={toggleMute} setVolume={changeVolume} aiSpeed={aiSpeed} setAiSpeed={changeAiSpeed} />
       {body}
     </div>
