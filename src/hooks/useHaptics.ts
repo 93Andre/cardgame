@@ -38,7 +38,30 @@ const vibrateMap: Record<HapticEvent, number | number[]> = {
 
 let instance: WebHaptics | null = null;
 let initFailed = false;
+let listenersInstalled = false;
+
+function resetInstance() {
+  try { (instance as any)?.destroy?.(); } catch { /* ignore */ }
+  instance = null;
+  initFailed = false;
+}
+
+function installLifecycleListeners() {
+  if (listenersInstalled || typeof window === 'undefined') return;
+  listenersInstalled = true;
+  // web-haptics uses its own AudioContext under the hood. When the tab is backgrounded or
+  // the system suspends audio, that context can stop responding. Drop the singleton on
+  // visibility change / focus so the next trigger() recreates it cleanly.
+  const onVisible = () => { if (!document.hidden) resetInstance(); };
+  document.addEventListener('visibilitychange', onVisible);
+  window.addEventListener('focus', resetInstance);
+  // Polling backup — if no focus/visibility events fired but the context died silently,
+  // recreate every 30s. trigger() is cheap so the next event still feels fresh.
+  setInterval(() => { if (!document.hidden && instance) resetInstance(); }, 30000);
+}
+
 function getHaptics(): WebHaptics | null {
+  installLifecycleListeners();
   if (initFailed) return null;
   if (instance) return instance;
   if (typeof window === 'undefined') return null;
@@ -51,8 +74,11 @@ export function useHaptics() {
     // Primary path: web-haptics (works cross-platform via vibrate or audio synthesis fallback).
     try {
       const wh = getHaptics();
-      if (wh) wh.trigger(presetMap[event] as any).catch(() => { /* ignore */ });
-    } catch { /* swallow */ }
+      if (wh) wh.trigger(presetMap[event] as any).catch(() => {
+        // If a trigger fails, the underlying context may be dead — drop and recreate next time.
+        resetInstance();
+      });
+    } catch { resetInstance(); }
     // Secondary fallback: navigator.vibrate. Only Android Chrome implements this; iOS Safari
     // and desktop browsers ignore it. Wrapped in try because some browsers throw on unsupported.
     try {
