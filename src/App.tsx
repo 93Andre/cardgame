@@ -731,43 +731,77 @@ function HowToPlay() {
                 <div className="font-bold text-base">🎯 Goal</div>
                 <p>Be the first to get rid of all your cards. Last player still holding cards is the <strong>Poop Head 💩</strong>.</p>
               </div>
+
               <div>
                 <div className="font-bold text-base">🃏 Setup</div>
-                <p>Each player gets 3 face-down cards (hidden, even from you), 3 face-up cards on top, and 3 in hand.
-                Before play starts, swap any cards between your hand and face-up to set yourself up well.</p>
+                <p>Each player gets <strong>3 face-down</strong> cards (hidden, even from you), <strong>3 face-up</strong> cards on top of those, and <strong>3 cards in hand</strong>. The remaining cards form the draw deck.</p>
+                <p>Before play, each player can swap any cards between their hand and face-up. Click one then the other to swap. Click <em>Mark ready</em> when done.</p>
+                <p>The player with the lowest <strong>3</strong> in hand starts. If no 3, lowest 4, etc. Default direction is clockwise.</p>
               </div>
+
               <div>
-                <div className="font-bold text-base">▶ Play</div>
-                <p>On your turn, play a card <strong>equal to or higher</strong> than the top of the pile. Card order:
-                <span className="font-mono text-xs ml-1">3 → 4 → 5 → 6 → 7 → 8 → 9 → J → Q → K → A</span>.
-                You can play multiple of the <em>same rank</em> at once.</p>
-                <p>If you can't play, <strong>pick up the entire pile</strong> into your hand. Refill to 3 from the deck after each play (while the deck lasts).</p>
+                <div className="font-bold text-base">▶ Playing a turn</div>
+                <p>Play a card <strong>equal to or higher</strong> than the top of the pile.</p>
+                <p>Card order: <span className="font-mono text-xs">3 · 4 · 5 · 6 · 7 · 8 · 9 · J · Q · K · A</span></p>
+                <p>You can play <strong>multiple cards of the same rank</strong> in one turn (e.g. two 7s).</p>
+                <p>After your play, you refill your hand to 3 from the deck while the deck still has cards.</p>
               </div>
+
+              <div>
+                <div className="font-bold text-base">📥 Card source order</div>
+                <p>You always play from your <strong>hand</strong> first. Once your hand <em>and</em> the deck are both empty, you start playing from your <strong>face-up</strong> cards. When face-up is empty, you play <strong>blind from face-down</strong> — you don't see the card before it lands. If it's illegal, you pick up the pile + that card.</p>
+              </div>
+
+              <div>
+                <div className="font-bold text-base">📤 Picking up the pile</div>
+                <p>If you can't (or don't want to) play, click <strong>Pick up pile</strong>. You then choose <strong>one card to reveal</strong> to everyone before any cards enter your hand. The rest stay private.</p>
+              </div>
+
               <div>
                 <div className="font-bold text-base">✨ Special cards</div>
                 <ul className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-sm">
                   <li><strong className="text-sky-700">2</strong> — reset; next player can play anything</li>
-                  <li><strong className="text-rose-700">10</strong> — burn the pile; turn passes</li>
+                  <li><strong className="text-rose-700">10</strong> — burns the pile; turn passes to next player</li>
                   <li><strong className="text-amber-700">8</strong> — skip next player</li>
                   <li><strong className="text-violet-700">K</strong> — reverse direction</li>
-                  <li><strong className="text-pink-700">7</strong> — next player must play ≤ 7</li>
-                  <li><strong className="text-purple-700">Joker ★</strong> — copies card below</li>
-                  <li className="sm:col-span-2"><strong>4 of a kind</strong> in a row — burns the pile (play again)</li>
+                  <li><strong className="text-pink-700">7</strong> — next player must play <strong>≤ 7</strong> (2/10/Joker still allowed)</li>
+                  <li><strong className="text-purple-700">Joker ★</strong> — copies the card directly below it (a 3 if the pile is empty)</li>
                 </ul>
               </div>
+
               <div>
-                <div className="font-bold text-base">📥 Card source order</div>
-                <p>Hand → Face-up (only when hand & deck are empty) → Face-down (blind; if illegal, you pick up the pile + that card).</p>
+                <div className="font-bold text-base">🔥 Burns</div>
+                <ul className="space-y-0.5 text-sm">
+                  <li>• A <strong>10</strong> burns the pile. Turn passes to next player.</li>
+                  <li>• <strong>4 of a kind in a row</strong> (across one or multiple turns) burns the pile. Player who placed the 4th card goes again.</li>
+                  <li>• Burn check uses <em>actual</em> rank — a Joker copying a 7 does <strong>not</strong> count toward four 7s. Four real Jokers do burn.</li>
+                  <li>• When a pile burns it goes to the burn pile (the 🔥 stack — you can see how many cards have been removed from play).</li>
+                </ul>
               </div>
+
+              <div>
+                <div className="font-bold text-base">🏁 Winning</div>
+                <p>Clear all your cards (hand → face-up → face-down). Each player who finishes is "out". Last player still holding cards is the <strong>Poop Head</strong>.</p>
+              </div>
+
               <div>
                 <div className="font-bold text-base">⌨ Keyboard</div>
-                <p><span className="font-mono text-xs">1–9</span> select cards · <span className="font-mono text-xs">Enter</span> play · <span className="font-mono text-xs">P</span> pick up pile</p>
+                <p><span className="font-mono text-xs">1–9</span> select cards · <span className="font-mono text-xs">Enter</span> play selected · <span className="font-mono text-xs">P</span> pick up pile</p>
               </div>
+
               <div className="border-t pt-3">
                 <div className="font-bold text-base text-fuchsia-700">⚡ Ultimate mode (auto at 4+ players)</div>
-                <p>Two decks shuffled together (108 cards, 4 jokers). New rule: <strong>Cutting</strong>.</p>
-                <p>If you hold the <strong>exact same card</strong> (rank + suit) as the top of the pile, you can play it <em>out of turn</em> — even before your real turn comes up. The player who was about to play gets skipped, and play continues from you. Jokers count as the card they're copying — so a Joker copying 3♥ can be cut by another 3♥.</p>
-                <p className="text-xs text-gray-600">First click wins. Cut counts toward 4-of-a-kind burns.</p>
+                <p>Two decks shuffled together — <strong>108 cards, 4 jokers</strong>. New rule: <strong>Cutting</strong>.</p>
+                <p>If you hold the <strong>exact same card</strong> (rank <em>and</em> suit) as the top of the pile, you can play it <em>out of turn</em>. A flashing pink <strong>✂ CUT!</strong> button appears whenever you have a match. Cuts are from <strong>hand only</strong>.</p>
+                <ul className="space-y-0.5 text-sm">
+                  <li>• A Joker on top resolves to the underlying card — so a Joker copying 3♥ can be cut by a 3♥.</li>
+                  <li>• The player who was about to play gets <strong>skipped</strong>; play continues from the cutter.</li>
+                  <li>• <strong>First message to the server wins</strong> if multiple players race to cut.</li>
+                  <li>• Cuts count toward <strong>4-of-a-kind</strong> burns (by actual rank).</li>
+                  <li>• A <strong>King played as a cut does NOT reverse direction</strong> — direction is preserved.</li>
+                  <li>• Other special-card effects (8 skip, 7 lock, 2 reset) still apply normally on a cut.</li>
+                  <li>• You can cut your own play if you somehow have a duplicate, though playing both at once is usually better.</li>
+                </ul>
               </div>
             </div>
           </motion.div>

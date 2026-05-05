@@ -304,7 +304,7 @@ function playCardsByIds(state: GameState, ids: string[]): GameState {
   return postPlay(next, state.current, src, cards);
 }
 
-function postPlay(stateIn: GameState, playerIdx: number, sourceUsed: Source, played: Card[]): GameState {
+function postPlay(stateIn: GameState, playerIdx: number, sourceUsed: Source, played: Card[], wasCut = false): GameState {
   let state = stateIn;
   const burnedByTen = played.length > 0 && played.every(c => c.rank === '10');
   const burnedByFour = isFourOfAKind(state.pile);
@@ -364,8 +364,14 @@ function postPlay(stateIn: GameState, playerIdx: number, sourceUsed: Source, pla
       skipNext = true;
       state = { ...state, log: logLine(state, '8 played — next player is skipped.') };
     } else if (eff === 'K') {
-      dirChange = -1;
-      state = { ...state, log: logLine(state, 'King played — direction reversed.') };
+      if (wasCut) {
+        // House rule: a King played as a cut does NOT reverse direction —
+        // play continues in the current direction from the cutter.
+        state = { ...state, log: logLine(state, 'King played as a cut — direction unchanged.') };
+      } else {
+        dirChange = -1;
+        state = { ...state, log: logLine(state, 'King played — direction reversed.') };
+      }
     } else if (eff === '7') {
       sevenLock = true;
       state = { ...state, log: logLine(state, '7 played — next player must play 7-or-lower (or 2/10/Joker).') };
@@ -641,7 +647,7 @@ function applyCut(state: GameState, cutterId: number, ids: string[]): GameState 
     current: cutterId,
     log: logLine(state, `${cutter.name} CUT with ${ranksSummary}!`),
   };
-  return postPlay(next, cutterId, 'hand', cards);
+  return postPlay(next, cutterId, 'hand', cards, /* wasCut */ true);
 }
 
 /* ----- AI ----- */
