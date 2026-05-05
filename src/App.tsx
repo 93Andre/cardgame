@@ -498,7 +498,7 @@ function CircularTable({ players, current, viewer, direction, renderPlayer, cent
     layout === 'landscape' ? 'clamp(95px, 18vw, 150px)' :
                              'clamp(110px, 30vw, 180px)';
   const aspectRatio =
-    layout === 'desktop'  ? '16 / 9' :
+    layout === 'desktop'  ? (n <= 3 ? '4 / 3' : '16 / 9') :
     layout === 'landscape' ? '5 / 3' :
                              '4 / 5';
   const minHeight =
@@ -1485,7 +1485,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
   return (
     <LayoutGroup>
       <div className="flex flex-col lg:flex-row h-full">
-        <div className="flex-1 p-3 sm:p-4 pt-14 sm:pt-14 lg:pt-3 flex flex-col gap-3 sm:gap-4 lg:gap-2 min-w-0">
+        <div className="flex-1 p-3 sm:p-4 pt-14 flex flex-col gap-3 sm:gap-4 lg:gap-2 min-w-0">
           <StatusBar state={state} viewerId={viewerId} isMyTurn={isMyTurn} />
           {/* Player tiles + center piles. Linear stack on small screens (turn-ordered);
               circular table layout on lg+ so the viewer can see who's next at a glance. */}
