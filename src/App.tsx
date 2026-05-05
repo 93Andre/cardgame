@@ -1919,6 +1919,16 @@ function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; o
   const [name, setName] = useState('');
   const [code, setCode] = useState(prefilledCode?.toUpperCase() ?? '');
   const [pendingCode, setPendingCode] = useState<string | null>(null);
+  const [aiDifficulty, setAiDifficulty] = useState<AiDifficulty>(() => {
+    try {
+      const v = localStorage.getItem('ph_ai_difficulty');
+      return (v === 'easy' || v === 'normal' || v === 'hard') ? v : 'normal';
+    } catch { return 'normal'; }
+  });
+  const setAndPersistDifficulty = (d: AiDifficulty) => {
+    setAiDifficulty(d);
+    try { localStorage.setItem('ph_ai_difficulty', d); } catch { /* ignore */ }
+  };
 
   // Poll the public room list every 5s while we're still in the lobby form.
   useEffect(() => {
@@ -2048,12 +2058,6 @@ function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; o
   const enough = conn.lobby.players.length >= MIN_PLAYERS;
   const shareUrl = `${location.origin}${location.pathname}?room=${conn.lobby.code}`;
   const hasAi = conn.lobby.players.some(p => p.isAi);
-  const lobbyDifficulty = (typeof window !== 'undefined' && (localStorage.getItem('ph_ai_difficulty') as AiDifficulty)) || 'normal';
-  const [aiDifficulty, setAiDifficulty] = useState<AiDifficulty>(lobbyDifficulty);
-  const setAndPersistDifficulty = (d: AiDifficulty) => {
-    setAiDifficulty(d);
-    try { localStorage.setItem('ph_ai_difficulty', d); } catch { /* ignore */ }
-  };
   return (
     <div className="h-full flex flex-col items-center justify-center gap-4 p-6">
       <h2 className="text-3xl font-bold">Room {conn.lobby.code}</h2>
