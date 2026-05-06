@@ -1404,6 +1404,29 @@ function MenuScreen({ onLocal, onNetwork, prefilledCode }: { onLocal: () => void
   );
 }
 
+// Plus/minus stepper for small integer ranges. Number inputs were a footgun
+// here — typing into a pre-filled field gave you "01" / "13" / etc. The
+// stepper avoids the keyboard entirely and clamps to [min, max].
+function Stepper({ value, setValue, min, max }: { value: number; setValue: (n: number) => void; min: number; max: number }) {
+  const dec = () => setValue(Math.max(min, value - 1));
+  const inc = () => setValue(Math.min(max, value + 1));
+  const atMin = value <= min;
+  const atMax = value >= max;
+  const btn = (disabled: boolean) =>
+    `w-9 h-9 rounded-md border text-lg font-bold leading-none flex items-center justify-center transition-colors ${
+      disabled
+        ? 'bg-gray-100 text-gray-300 border-gray-200 cursor-not-allowed'
+        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50 active:scale-95'
+    }`;
+  return (
+    <div className="flex items-center gap-1.5 select-none">
+      <button type="button" onClick={dec} disabled={atMin} className={btn(atMin)} aria-label="Decrease">−</button>
+      <span className="w-8 text-center font-semibold tabular-nums" aria-live="polite">{value}</span>
+      <button type="button" onClick={inc} disabled={atMax} className={btn(atMax)} aria-label="Increase">+</button>
+    </div>
+  );
+}
+
 function LocalSetupScreen({ onStart, onBack }: { onStart: (humans: number, ais: number, aiDifficulty: AiDifficulty) => void; onBack: () => void }) {
   const [humans, setHumans] = useState(1);
   const [ais, setAis] = useState(2);
@@ -1420,18 +1443,14 @@ function LocalSetupScreen({ onStart, onBack }: { onStart: (humans: number, ais: 
     <div className="min-h-full flex flex-col items-center justify-center gap-6 p-6">
       <h2 className="text-3xl font-bold text-white drop-shadow">Local game setup</h2>
       <div className="flex flex-col gap-4 bg-white/70 p-6 rounded-lg border border-gray-300 w-80">
-        <label className="flex items-center justify-between">
+        <div className="flex items-center justify-between">
           <span>Humans (hot-seat)</span>
-          <input type="number" min={1} max={MAX_PLAYERS} value={humans}
-            onChange={e => setHumans(Math.max(1, Math.min(MAX_PLAYERS, +e.target.value || 1)))}
-            className="w-16 px-2 py-1 border rounded text-center" />
-        </label>
-        <label className="flex items-center justify-between">
+          <Stepper value={humans} setValue={setHumans} min={1} max={MAX_PLAYERS} />
+        </div>
+        <div className="flex items-center justify-between">
           <span>AI opponents</span>
-          <input type="number" min={0} max={MAX_PLAYERS - 1} value={ais}
-            onChange={e => setAis(Math.max(0, Math.min(MAX_PLAYERS - 1, +e.target.value || 0)))}
-            className="w-16 px-2 py-1 border rounded text-center" />
-        </label>
+          <Stepper value={ais} setValue={setAis} min={0} max={MAX_PLAYERS - 1} />
+        </div>
         {ais > 0 && (
           <div className="flex flex-col gap-1.5">
             <span className="text-sm text-gray-700">AI difficulty</span>
