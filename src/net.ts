@@ -56,6 +56,7 @@ export interface NetworkConn {
   session: Session | null;
   rooms: PublicRoom[];
   error: string | null;
+  reconnectAttempt: number;     // increments while we're retrying after a drop
   send: (msg: ClientMsg) => void;
   disconnect: () => void;
   clearError: () => void;
@@ -97,65 +98,94 @@ export function useNetwork(active: boolean): NetworkConn {
   const [session, setSession] = useState<Session | null>(null);
   const [rooms, setRooms] = useState<PublicRoom[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const wsRef = useRef<WebSocket | null>(null);
+  const intentionalCloseRef = useRef(false);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const attemptRef = useRef(0);
 
   useEffect(() => {
     if (!active) return;
-    setStatus('connecting');
-    const ws = new WebSocket(defaultWsUrl());
-    wsRef.current = ws;
-    ws.onopen = () => {
-      setStatus('open');
-      const stored = loadSession();
-      if (stored && !stored.spectator) {
-        ws.send(JSON.stringify({ t: 'RESUME', code: stored.code, token: stored.token } as ClientMsg));
-      }
-    };
-    ws.onmessage = ev => {
-      try {
-        const msg = JSON.parse(ev.data) as ServerMsg;
-        if (msg.t === 'LOBBY') {
-          setLobby(msg.lobby);
-          if (!msg.lobby.started) setState(null);
-        } else if (msg.t === 'STATE') {
-          setLobby(msg.lobby);
-          setState(msg.state);
-        } else if (msg.t === 'SESSION') {
-          const s: Session = { code: msg.code, id: msg.id, token: msg.token, spectator: !!msg.spectator };
-          setSession(s);
-          if (!s.spectator) saveSession(s);
-        } else if (msg.t === 'ROOMS') {
-          setRooms(msg.rooms);
-        } else if (msg.t === 'ROOM_CLOSED') {
-          setError(msg.reason);
-          setLobby(null); setState(null); setSession(null);
-          saveSession(null);
-        } else if (msg.t === 'ERR') {
-          setError(msg.msg);
-          // If we tried to resume into a stale session, clear it.
-          if (/not found|invalid session/i.test(msg.msg)) saveSession(null);
+    intentionalCloseRef.current = false;
+
+    // Auto-reconnect with capped exponential backoff so a brief network blip
+    // (sleep/wake, wifi handoff) doesn't kick the player out of their seat.
+    // Capped at ~4s so we converge quickly once the network returns.
+    const connect = () => {
+      setStatus('connecting');
+      const ws = new WebSocket(defaultWsUrl());
+      wsRef.current = ws;
+      ws.onopen = () => {
+        setStatus('open');
+        attemptRef.current = 0;
+        setReconnectAttempt(0);
+        const stored = loadSession();
+        if (stored && !stored.spectator) {
+          ws.send(JSON.stringify({ t: 'RESUME', code: stored.code, token: stored.token } as ClientMsg));
         }
-      } catch {
-        // ignore malformed
-      }
+      };
+      ws.onmessage = ev => {
+        try {
+          const msg = JSON.parse(ev.data) as ServerMsg;
+          if (msg.t === 'LOBBY') {
+            setLobby(msg.lobby);
+            if (!msg.lobby.started) setState(null);
+          } else if (msg.t === 'STATE') {
+            setLobby(msg.lobby);
+            setState(msg.state);
+          } else if (msg.t === 'SESSION') {
+            const s: Session = { code: msg.code, id: msg.id, token: msg.token, spectator: !!msg.spectator };
+            setSession(s);
+            if (!s.spectator) saveSession(s);
+          } else if (msg.t === 'ROOMS') {
+            setRooms(msg.rooms);
+          } else if (msg.t === 'ROOM_CLOSED') {
+            setError(msg.reason);
+            setLobby(null); setState(null); setSession(null);
+            saveSession(null);
+          } else if (msg.t === 'ERR') {
+            setError(msg.msg);
+            if (/not found|invalid session/i.test(msg.msg)) saveSession(null);
+          }
+        } catch { /* ignore malformed */ }
+      };
+      ws.onerror = () => { /* deferred to onclose for retry decision */ };
+      ws.onclose = () => {
+        if (intentionalCloseRef.current) {
+          setStatus('closed');
+          return;
+        }
+        // Keep retrying. UI overlays a "Reconnecting…" pill while attemptRef > 0.
+        attemptRef.current += 1;
+        setReconnectAttempt(attemptRef.current);
+        const delay = Math.min(4000, 400 * Math.pow(1.6, attemptRef.current - 1));
+        if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = setTimeout(connect, delay);
+      };
     };
-    ws.onerror = () => { setStatus('error'); setError('Connection error — is the server running?'); };
-    ws.onclose = () => setStatus(s => (s === 'error' ? s : 'closed'));
-    return () => { try { ws.close(); } catch { /* ignore */ } };
+    connect();
+
+    return () => {
+      intentionalCloseRef.current = true;
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      try { wsRef.current?.close(); } catch { /* ignore */ }
+    };
   }, [active]);
 
   const send = (msg: ClientMsg) => {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
-    // Clear any previous error so a fresh attempt isn't masked by stale text.
     setError(null);
   };
   const disconnect = () => {
+    intentionalCloseRef.current = true;
+    if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
     saveSession(null);
     setSession(null);
     try { wsRef.current?.close(); } catch { /* ignore */ }
     setLobby(null); setState(null); setStatus('closed'); setError(null);
+    attemptRef.current = 0; setReconnectAttempt(0);
   };
   const clearError = () => setError(null);
-  return { status, lobby, state, session, rooms, error, send, disconnect, clearError };
+  return { status, lobby, state, session, rooms, error, reconnectAttempt, send, disconnect, clearError };
 }

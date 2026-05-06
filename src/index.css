@@ -13,10 +13,26 @@
 /* Soft "chasing" pulse for the directional chevrons placed around the table.
  * Animates opacity only so the per-chevron rotate transform is preserved. */
 @keyframes table-flow-pulse {
-  0%, 100% { opacity: 0.18; }
-  50%      { opacity: 0.55; }
+  0%, 100% { opacity: 0.45; }
+  50%      { opacity: 0.95; }
 }
-.table-flow-pulse { animation: table-flow-pulse 2.4s ease-in-out infinite; }
+.table-flow-pulse { animation: table-flow-pulse 2.2s ease-in-out infinite; }
+
+/* King reversal: brief whoosh as the chevrons flip direction. */
+@keyframes table-flow-flip {
+  0%   { filter: brightness(1.6) drop-shadow(0 0 8px #fef08a); }
+  100% { filter: none; }
+}
+.table-flow-flip { animation: table-flow-flip 0.9s ease-out 1; }
+
+/* Last-action pulse: a quick warm flash on the tile of whoever just played
+ * so the eye can immediately find them across the table. ~600ms total. */
+@keyframes player-acted-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(250, 204, 21, 0); }
+  35%  { box-shadow: 0 0 0 8px rgba(250, 204, 21, 0.55); }
+  100% { box-shadow: 0 0 0 0 rgba(250, 204, 21, 0); }
+}
+.player-acted-pulse { animation: player-acted-pulse 0.6s ease-out 1; }
 
 html, body, #root {
   height: 100%;

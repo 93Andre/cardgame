@@ -217,6 +217,40 @@ function loadAiSpeed(): number {
 function saveAiSpeed(v: number) {
   try { localStorage.setItem(AI_SPEED_KEY, String(v)); } catch { /* ignore */ }
 }
+
+// Persistent player profile — name + lifetime W/L. Keyed by single localStorage entries
+// so it works even when a user clears the rest of their site data.
+const PROFILE_NAME_KEY = 'ph_player_name';
+const PROFILE_STATS_KEY = 'ph_player_stats';
+interface ProfileStats { wins: number; losses: number; games: number; }
+function loadName(): string {
+  try { return localStorage.getItem(PROFILE_NAME_KEY) ?? ''; } catch { return ''; }
+}
+function saveName(n: string) {
+  try { localStorage.setItem(PROFILE_NAME_KEY, n); } catch { /* ignore */ }
+}
+function loadStats(): ProfileStats {
+  try {
+    const raw = localStorage.getItem(PROFILE_STATS_KEY);
+    if (!raw) return { wins: 0, losses: 0, games: 0 };
+    const v = JSON.parse(raw);
+    return { wins: +v.wins || 0, losses: +v.losses || 0, games: +v.games || 0 };
+  } catch { return { wins: 0, losses: 0, games: 0 }; }
+}
+function saveStats(s: ProfileStats) {
+  try { localStorage.setItem(PROFILE_STATS_KEY, JSON.stringify(s)); } catch { /* ignore */ }
+}
+// Record a finished game's outcome for the local player. "win" = finished first
+// (finishPos === 0). "loss" = was the Poop Head. Other positions count as a "game"
+// only — this keeps win-rate honest in 4+ player games.
+function recordOutcome(outcome: 'win' | 'loss' | 'middle') {
+  const s = loadStats();
+  s.games += 1;
+  if (outcome === 'win') s.wins += 1;
+  else if (outcome === 'loss') s.losses += 1;
+  saveStats(s);
+}
+
 const sfx = new SoundEngine();
 
 /* ============== Per-player palette ============== */
@@ -348,19 +382,20 @@ function HandStack({ count }: { count: number }) {
 }
 
 function PlayerArea({ player, isCurrent, isViewer, compact, faceDownClickable, onFaceDownClick, emotes,
-  faceUpClickable, onFaceUpClick, selectedFaceUpIds, turnElapsedMs }: {
+  faceUpClickable, onFaceUpClick, selectedFaceUpIds, turnElapsedMs, recentlyActed }: {
   player: Player; isCurrent: boolean; isViewer: boolean; compact?: boolean;
   faceDownClickable?: boolean; onFaceDownClick?: (id: string) => void;
   faceUpClickable?: boolean; onFaceUpClick?: (id: string) => void;
   selectedFaceUpIds?: Set<string>;
   emotes?: { id: string; playerId: number; emoji: string }[];
   turnElapsedMs?: number;
+  recentlyActed?: boolean;            // 600ms pulse on whoever just played — table-wide readability.
 }) {
   const c = colorFor(player.id);
   // Compact mode: tighter padding, smaller text, face-up + face-down rendered side-by-side
   // in a single row so the tile stays short enough to fit around the table on mobile.
   return (
-    <div className={`relative ${compact ? 'p-1.5' : 'p-2 sm:p-3'} rounded-lg border-2 ${isCurrent ? `${c.border} ${c.bg} ring-2 ${c.ring}` : 'border-gray-300 bg-white/60'} flex flex-col ${compact ? 'gap-1' : 'gap-2'} min-w-0`}>
+    <div className={`relative ${compact ? 'p-1.5' : 'p-2 sm:p-3'} rounded-lg border-2 ${isCurrent ? `${c.border} ${c.bg} ring-2 ${c.ring}` : 'border-gray-300 bg-white/60'} ${recentlyActed ? 'player-acted-pulse' : ''} flex flex-col ${compact ? 'gap-1' : 'gap-2'} min-w-0`}>
       {/* Turn-speed indicator: appears above the current player's tile after 15s of thinking,
           fills toward the 30s server-side auto-pickup cutoff. */}
       {isCurrent && typeof turnElapsedMs === 'number' && turnElapsedMs > 15000 && (
@@ -464,11 +499,12 @@ function PlayerArea({ player, isCurrent, isViewer, compact, faceDownClickable, o
 
 // Arranges player tiles around a central pile area, with the viewer always at the bottom
 // and other players spread clockwise (or counter-clockwise) by turn order.
-function CircularTable({ players, current, viewer, direction, renderPlayer, centerContent }: {
+function CircularTable({ players, current, viewer, direction, directionFlashKey, renderPlayer, centerContent }: {
   players: Player[];
   current: number;
   viewer: number;
   direction: 1 | -1;
+  directionFlashKey?: number;        // bumps when direction flips → triggers chevron flash
   renderPlayer: (p: Player, isNext: boolean, compact: boolean) => React.ReactNode;
   centerContent: React.ReactNode;
 }) {
@@ -545,7 +581,10 @@ function CircularTable({ players, current, viewer, direction, renderPlayer, cent
       {/* Subtle directional chevrons at cardinal points around the ellipse,
           pointing along the current play direction so the flow of the game is
           unmistakable at a glance. They use real DOM elements (not SVG) so the
-          chevron shape doesn't distort with the table's aspect ratio. */}
+          chevron shape doesn't distort with the table's aspect ratio. The
+          `directionFlashKey` is appended to the React key so the elements
+          re-mount when a King reverses direction — replaying the flash
+          animation. */}
       {[0, 1, 2, 3].map(i => {
         const theta = i * 90;                                          // 0=N, 90=E, 180=S, 270=W
         const xPct = 50 + Math.sin(theta * Math.PI / 180) * rx * 100;
@@ -553,13 +592,13 @@ function CircularTable({ players, current, viewer, direction, renderPlayer, cent
         const rot = direction === 1 ? theta : theta + 180;             // tangent direction of motion
         return (
           <div
-            key={`flow-${i}`}
-            className="absolute text-emerald-300/35 text-2xl select-none pointer-events-none table-flow-pulse"
+            key={`flow-${i}-${directionFlashKey ?? 0}`}
+            className="absolute text-emerald-200 text-3xl sm:text-4xl select-none pointer-events-none table-flow-pulse table-flow-flip drop-shadow-[0_1px_2px_rgba(0,0,0,0.35)]"
             style={{
               left: `${xPct}%`,
               top: `${yPct}%`,
               transform: `translate(-50%, -50%) rotate(${rot}deg)`,
-              animationDelay: `${i * 0.6}s`,
+              animationDelay: `${i * 0.6}s, ${i * 0.05}s`,
             }}
             aria-hidden
           >
@@ -1276,12 +1315,27 @@ function HowToPlay() {
 }
 
 function MenuScreen({ onLocal, onNetwork, prefilledCode }: { onLocal: () => void; onNetwork: (code?: string) => void; prefilledCode?: string }) {
+  const stats = loadStats();
+  const name = loadName();
+  const winRate = stats.games > 0 ? Math.round((stats.wins / stats.games) * 100) : 0;
   return (
     <div className="min-h-full flex flex-col items-center justify-center gap-5 p-6">
       <h1 className="text-4xl sm:text-5xl font-black tracking-tight text-white drop-shadow-md">💩 Latrine</h1>
       <p className="max-w-xl text-center text-white/85 text-sm sm:text-base">
         A shedding card game. Get rid of all your cards. Last one holding cards is the Poop Head 💩.
       </p>
+      {(name || stats.games > 0) && (
+        <div className="flex items-center gap-3 text-xs sm:text-sm bg-white/15 backdrop-blur-sm border border-white/25 rounded-full px-4 py-1.5 text-white/95">
+          {name && <span>👋 <strong>{name}</strong></span>}
+          {stats.games > 0 && (
+            <>
+              <span className="text-white/50">•</span>
+              <span>🏆 <strong>{stats.wins}</strong>W / <strong>{stats.losses}</strong>L</span>
+              <span className="text-white/60">({winRate}% win, {stats.games} played)</span>
+            </>
+          )}
+        </div>
+      )}
       <div className="flex flex-col sm:flex-row gap-3">
         <button onClick={onLocal} className="px-6 py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-lg shadow">
           Local play (with AI option)
@@ -1477,9 +1531,79 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
   }, []);
   const turnElapsedMs = now - turnStartRef.current;
 
+  // Turn-alert chime: when it becomes the viewer's turn, play a short ding so they
+  // notice in a backgrounded tab. Skip the very first transition (game start) — that's
+  // covered by the deal animation — and skip when the page is hidden.
+  const wasMyTurnRef = useRef(false);
+  useEffect(() => {
+    if (isMyTurn && !wasMyTurnRef.current && state.phase === 'play') {
+      sfx.play('seven');     // existing short blip — works as a "your turn" chime
+    }
+    wasMyTurnRef.current = isMyTurn;
+  }, [isMyTurn, state.phase]);
+
+  // Last-actor flash: track whose tile to pulse for 600ms. Parsed from the most
+  // recent log line that begins with "<name> played/picked/flipped/cut". Cleared on
+  // a timer so the pulse only fires once per action.
+  const [lastActorId, setLastActorId] = useState<number | null>(null);
+  const lastLogLenRef = useRef(state.log.length);
+  useEffect(() => {
+    if (state.log.length === lastLogLenRef.current) return;
+    const fresh = state.log.slice(lastLogLenRef.current);
+    lastLogLenRef.current = state.log.length;
+    // Walk newest-first; first match wins.
+    for (let i = fresh.length - 1; i >= 0; i--) {
+      const line = fresh[i];
+      const m = line.match(/^([^\n:]+?)\s+(played|picked|flipped|cut|CUT|burned)/i);
+      if (!m) continue;
+      const name = m[1].trim();
+      const idx = state.players.findIndex(p => p.name === name);
+      if (idx >= 0) {
+        setLastActorId(idx);
+        const t = setTimeout(() => setLastActorId(null), 650);
+        return () => clearTimeout(t);
+      }
+    }
+  }, [state.log, state.players]);
+
+  // Direction flash: bump a counter whenever state.direction flips so the chevron
+  // wrapper re-mounts and replays its flash animation. Sound is already played by
+  // the toast/log handler when "direction reversed" appears.
+  const [directionFlashKey, setDirectionFlashKey] = useState(0);
+  const lastDirRef = useRef(state.direction);
+  useEffect(() => {
+    if (lastDirRef.current !== state.direction) {
+      lastDirRef.current = state.direction;
+      setDirectionFlashKey(k => k + 1);
+    }
+  }, [state.direction]);
+
   // Ultimate mode: viewer can cut if they have cards matching the top of the pile.
   const myCutMatches = !isSpectator && state.mode === 'ultimate' && me ? cutMatches(state, viewer) : [];
   const canCut = myCutMatches.length > 0 && !isMyTurn; // cutting your own play is allowed but redundant — only show on others' turns
+
+  // Cut-race feedback: if the viewer had cut matches in the previous state but
+  // someone else got their cut in first, show a small "Beat to it!" pip so the
+  // race outcome is acknowledged instead of silently failing.
+  const [beatToIt, setBeatToIt] = useState(false);
+  const prevHadCutRef = useRef(false);
+  const prevLogLenRef = useRef(state.log.length);
+  useEffect(() => {
+    const newLines = state.log.slice(prevLogLenRef.current);
+    prevLogLenRef.current = state.log.length;
+    let cleanup: (() => void) | undefined;
+    if (state.mode === 'ultimate' && prevHadCutRef.current && newLines.length > 0) {
+      const myName = !isSpectator && me ? me.name : null;
+      const someoneElseCut = newLines.some(l => /\bCUT with\b/i.test(l) && (myName ? !l.startsWith(myName + ' ') : true));
+      if (someoneElseCut) {
+        setBeatToIt(true);
+        const t = setTimeout(() => setBeatToIt(false), 1800);
+        cleanup = () => clearTimeout(t);
+      }
+    }
+    prevHadCutRef.current = canCut;
+    return cleanup;
+  }, [state.log, state.mode, canCut, isSpectator, me]);
 
   const sourceCards = me && src ? cardsFromSource(me, src) : [];
   const displayCards = sortOn ? sortCards(sourceCards) : sourceCards;
@@ -1515,6 +1639,21 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
   return (
     <LayoutGroup>
       <div className="flex flex-col lg:flex-row min-h-full lg:h-screen lg:overflow-hidden">
+        <AnimatePresence>
+          {beatToIt && (
+            <motion.div
+              key="beat-to-it"
+              initial={{ y: -16, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: -16, opacity: 0 }}
+              className="fixed top-16 left-1/2 -translate-x-1/2 z-40 px-3 py-1.5 rounded-full text-xs font-semibold shadow-lg bg-fuchsia-600 text-white pointer-events-none"
+              role="status"
+              aria-live="polite"
+            >
+              ✂ Beat to it!
+            </motion.div>
+          )}
+        </AnimatePresence>
         <div className="flex-1 p-3 sm:p-4 pt-14 flex flex-col gap-3 sm:gap-4 lg:gap-2 min-w-0 lg:min-h-0">
           <StatusBar state={state} viewerId={viewerId} isMyTurn={isMyTurn} />
           {/* Player tiles + center piles. Linear stack on small screens (turn-ordered);
@@ -1537,6 +1676,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
                   selectedFaceUpIds={selectedFaceUpIds}
                   emotes={emotes}
                   turnElapsedMs={pp.id === state.current ? turnElapsedMs : undefined}
+                  recentlyActed={pp.id === lastActorId}
                 />
               );
             };
@@ -1549,6 +1689,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
                 current={state.current}
                 viewer={safeViewer}
                 direction={state.direction}
+                directionFlashKey={directionFlashKey}
                 renderPlayer={renderPlayerTile}
                 centerContent={center}
               />
@@ -1950,17 +2091,165 @@ function EndScreen({ state, onPlayAgain }: { state: GameState; onPlayAgain: () =
         </table>
       </div>
 
-      <button onClick={onPlayAgain} className="px-6 py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-lg shadow z-10">
-        Play again
-      </button>
+      <div className="flex gap-2 z-10">
+        <button onClick={onPlayAgain} className="px-6 py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-lg shadow">
+          Play again
+        </button>
+        <ShareScorecardButton state={state} />
+      </div>
     </div>
   );
 }
 
+// Render a 1080×1080 scorecard onto an offscreen canvas, then either pop the
+// native share sheet (mobile) or trigger a download. Self-contained — no
+// external image libs. Caches the blob so repeat clicks are instant.
+function ShareScorecardButton({ state }: { state: GameState }) {
+  const [busy, setBusy] = useState(false);
+  const onClick = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const blob = await renderScorecardBlob(state);
+      if (!blob) return;
+      const file = new File([blob], 'latrine-scorecard.png', { type: 'image/png' });
+      const canShareFiles =
+        typeof navigator !== 'undefined' &&
+        typeof (navigator as Navigator & { canShare?: (d: ShareData) => boolean }).canShare === 'function' &&
+        (navigator as Navigator & { canShare?: (d: ShareData) => boolean }).canShare!({ files: [file] });
+      if (canShareFiles && typeof navigator.share === 'function') {
+        try {
+          await navigator.share({ files: [file], title: 'Latrine — game over', text: '💩 Latrine scorecard' });
+          return;
+        } catch { /* user cancelled — fall through to download */ }
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'latrine-scorecard.png';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      onClick={onClick}
+      disabled={busy}
+      className={`px-5 py-3 rounded-lg font-bold shadow border ${busy ? 'bg-gray-300 text-gray-600 cursor-wait' : 'bg-white/90 hover:bg-white text-gray-800 border-gray-300'}`}
+    >
+      {busy ? '…' : '📤 Share scorecard'}
+    </button>
+  );
+}
+
+async function renderScorecardBlob(state: GameState): Promise<Blob | null> {
+  const SIZE = 1080;
+  const canvas = document.createElement('canvas');
+  canvas.width = SIZE; canvas.height = SIZE;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  // Felt background — solid base + soft radial highlight to mimic the live table.
+  ctx.fillStyle = '#2c5d44';
+  ctx.fillRect(0, 0, SIZE, SIZE);
+  const grad = ctx.createRadialGradient(SIZE / 2, SIZE * 0.3, 80, SIZE / 2, SIZE / 2, SIZE * 0.7);
+  grad.addColorStop(0, 'rgba(255,255,255,0.18)');
+  grad.addColorStop(1, 'rgba(0,0,0,0.15)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, SIZE, SIZE);
+
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'center';
+
+  // Title.
+  ctx.fillStyle = 'white';
+  ctx.font = 'bold 88px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto';
+  ctx.fillText('💩 Latrine', SIZE / 2, 110);
+  ctx.font = '500 36px ui-sans-serif, system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.fillText(state.mode === 'ultimate' ? 'Ultimate · Game over' : 'Game over', SIZE / 2, 175);
+
+  // Loser callout.
+  const loser = state.players.find(p => p.id === state.poopHead);
+  ctx.fillStyle = '#fde68a';
+  ctx.font = 'bold 64px ui-sans-serif, system-ui, sans-serif';
+  ctx.fillText(`${loser?.name ?? '?'} is the Poop Head 💩`, SIZE / 2, 280);
+
+  // Final order panel.
+  const order = state.players
+    .filter(p => p.finishPos !== null)
+    .sort((a, b) => (a.finishPos! - b.finishPos!));
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  const panelX = 120, panelY = 360, panelW = SIZE - 240;
+  const rows = order.length + 1;
+  const rowH = 70;
+  const panelH = rows * rowH + 60;
+  ctx.beginPath();
+  ctx.roundRect(panelX, panelY, panelW, panelH, 24);
+  ctx.fill();
+  ctx.fillStyle = '#1f2937';
+  ctx.textAlign = 'left';
+  ctx.font = 'bold 44px ui-sans-serif, system-ui, sans-serif';
+  ctx.fillText('Final standings', panelX + 32, panelY + 50);
+  ctx.font = '500 38px ui-sans-serif, system-ui, sans-serif';
+  let y = panelY + 110;
+  const medal = (pos: number) => pos === 0 ? '🥇' : pos === 1 ? '🥈' : pos === 2 ? '🥉' : `#${pos + 1}`;
+  for (const p of order) {
+    ctx.fillStyle = '#1f2937';
+    ctx.fillText(`${medal(p.finishPos!)}  ${p.name}${p.isAi ? ' (AI)' : ''}`, panelX + 32, y);
+    y += rowH;
+  }
+  if (loser) {
+    ctx.fillStyle = '#9f1239';
+    ctx.fillText(`💩  ${loser.name}${loser.isAi ? ' (AI)' : ''}`, panelX + 32, y);
+  }
+
+  // Footer.
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.textAlign = 'center';
+  ctx.font = '500 30px ui-sans-serif, system-ui, sans-serif';
+  ctx.fillText('cardgame-lilac.vercel.app', SIZE / 2, SIZE - 60);
+
+  return await new Promise<Blob | null>(resolve => canvas.toBlob(b => resolve(b), 'image/png'));
+}
+
 /* ============== Network lobby ============== */
 
+// Share button: prefers the native Web Share sheet (so iOS users can drop the
+// link straight into iMessage), falls back to clipboard copy with a brief
+// "Copied!" confirmation. Self-contained — owns its own copied-state.
+function ShareRoomButton({ code, url }: { code: string; url: string }) {
+  const [copied, setCopied] = useState(false);
+  const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+  const onClick = async () => {
+    const text = `Join my Latrine game — room ${code}`;
+    try {
+      if (canShare) {
+        await navigator.share({ title: 'Latrine', text, url });
+        return;
+      }
+    } catch { /* user cancelled or share failed; fall through to clipboard */ }
+    try { await navigator.clipboard?.writeText(url); } catch { /* ignore */ }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+  return (
+    <button
+      onClick={onClick}
+      className="text-xs px-3 py-1 bg-white/80 border border-gray-300 rounded hover:bg-white flex items-center gap-1"
+      title={url}
+    >
+      {copied ? '✓ Copied!' : (canShare ? '📤 Share invite' : '🔗 Copy invite link')}
+    </button>
+  );
+}
+
+
 function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; onLeave: () => void; prefilledCode?: string }) {
-  const [name, setName] = useState('');
+  const [name, setName] = useState(() => loadName());
   const [code, setCode] = useState(prefilledCode?.toUpperCase() ?? '');
   const [pendingCode, setPendingCode] = useState<string | null>(null);
   const [aiDifficulty, setAiDifficulty] = useState<AiDifficulty>(() => {
@@ -2041,7 +2330,7 @@ function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; o
                             {!r.started && (
                               <button
                                 disabled={!nameTrim || codeTrim !== r.code}
-                                onClick={() => conn.send({ t: 'JOIN', code: codeTrim, name: nameTrim })}
+                                onClick={() => { saveName(nameTrim); conn.send({ t: 'JOIN', code: codeTrim, name: nameTrim }); }}
                                 className={`px-3 py-1.5 rounded text-sm font-semibold ${nameTrim && codeTrim === r.code ? 'bg-indigo-500 hover:bg-indigo-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
                               >Join {r.host}'s game</button>
                             )}
@@ -2064,11 +2353,11 @@ function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; o
               </div>
             )}
 
-            <input value={name} onChange={e => setName(e.target.value)} placeholder="Your name"
+            <input value={name} onChange={e => { setName(e.target.value); saveName(e.target.value); }} placeholder="Your name"
               className="px-3 py-2 border border-gray-300 rounded" />
             <button
               disabled={!nameTrim}
-              onClick={() => conn.send({ t: 'CREATE', name: nameTrim })}
+              onClick={() => { saveName(nameTrim); conn.send({ t: 'CREATE', name: nameTrim }); }}
               className={`px-4 py-2 rounded font-semibold ${nameTrim ? 'bg-amber-500 hover:bg-amber-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
             >Create room</button>
             <div className="text-center text-xs text-gray-500">— or —</div>
@@ -2077,7 +2366,7 @@ function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; o
             <div className="grid grid-cols-2 gap-2">
               <button
                 disabled={!nameTrim || codeTrim.length !== 4}
-                onClick={() => conn.send({ t: 'JOIN', code: codeTrim, name: nameTrim })}
+                onClick={() => { saveName(nameTrim); conn.send({ t: 'JOIN', code: codeTrim, name: nameTrim }); }}
                 className={`px-4 py-2 rounded font-semibold ${nameTrim && codeTrim.length === 4 ? 'bg-indigo-500 hover:bg-indigo-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
               >Join</button>
               <button
@@ -2105,11 +2394,7 @@ function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; o
   return (
     <div className="h-full flex flex-col items-center justify-center gap-4 p-6">
       <h2 className="text-3xl font-bold">Room {conn.lobby.code}</h2>
-      <button
-        onClick={() => navigator.clipboard?.writeText(shareUrl)}
-        className="text-xs px-3 py-1 bg-white/80 border border-gray-300 rounded hover:bg-white"
-        title={shareUrl}
-      >Copy invite link</button>
+      <ShareRoomButton code={conn.lobby.code} url={shareUrl} />
       <div className="text-sm text-gray-600">{MIN_PLAYERS}–{MAX_PLAYERS} players</div>
       <ul className="bg-white/80 p-4 rounded-lg border border-gray-300 w-80">
         {conn.lobby.players.map(p => {
@@ -2396,6 +2681,17 @@ function LocalGame({ humans, ais, aiSpeed, aiDifficulty, onExit }: { humans: num
     if (state.phase === 'end' && !endedRef.current) {
       endedRef.current = true;
       sfx.playSample(SFX_FAHHHH);
+      // Local mode: assume viewer is player 0 (the only consistent human seat
+      // outside hot-seat). Hot-seat games skip recording.
+      const isHotSeat = state.players.filter(p => !p.isAi).length > 1;
+      if (!isHotSeat) {
+        const me = state.players[0];
+        if (me && !me.isAi) {
+          if (me.finishPos === 0) recordOutcome('win');
+          else if (state.poopHead === 0) recordOutcome('loss');
+          else recordOutcome('middle');
+        }
+      }
     } else if (state.phase !== 'end') {
       endedRef.current = false;
     }
@@ -2476,6 +2772,15 @@ function NetworkGame({ onExit, prefilledCode }: { onExit: () => void; prefilledC
       const myId = conn.session?.spectator ? -1 : conn.lobby?.myId ?? -1;
       if (myId === conn.state.poopHead) sfx.playSample(SFX_FAHHHH);
       else sfx.play('win');
+      // Persist W/L for this player. Spectators and AI seats are skipped.
+      if (myId >= 0) {
+        const me = conn.state.players[myId];
+        if (me && !me.isAi) {
+          if (me.finishPos === 0) recordOutcome('win');
+          else if (conn.state.poopHead === myId) recordOutcome('loss');
+          else recordOutcome('middle');
+        }
+      }
     } else if (conn.state?.phase !== 'end') {
       endedRef.current = false;
     }
@@ -2513,6 +2818,7 @@ function NetworkGame({ onExit, prefilledCode }: { onExit: () => void; prefilledC
         {conn.state?.mode === 'ultimate' && <div className="text-[10px] px-2 py-0.5 bg-fuchsia-100 text-fuchsia-800 border border-fuchsia-300 rounded">Ultimate</div>}
       </div>
       <ToastStack toasts={toasts} />
+      <ConnectionPill status={conn.status} attempt={conn.reconnectAttempt} />
       {body}
       <DeckDrawOverlay ids={[...fromDeckIds]} />
       <AnimatePresence>
@@ -2520,6 +2826,49 @@ function NetworkGame({ onExit, prefilledCode }: { onExit: () => void; prefilledC
         {reveal && <RevealOverlay key={reveal.ts} playerName={reveal.name} card={reveal.card} />}
       </AnimatePresence>
     </>
+  );
+}
+
+// Floating pill that shows WS connectivity. Stays hidden when status === 'open'
+// and we're not mid-retry. Briefly flashes a green "Reconnected" pip when
+// transitioning back from a retry. Top-center so it doesn't fight with the menu
+// button or settings.
+function ConnectionPill({ status, attempt }: { status: NetworkConn['status']; attempt: number }) {
+  const [justReconnected, setJustReconnected] = useState(false);
+  const wasRetryingRef = useRef(false);
+  useEffect(() => {
+    if (status !== 'open' && attempt > 0) wasRetryingRef.current = true;
+    if (status === 'open' && wasRetryingRef.current) {
+      wasRetryingRef.current = false;
+      setJustReconnected(true);
+      const t = setTimeout(() => setJustReconnected(false), 1800);
+      return () => clearTimeout(t);
+    }
+  }, [status, attempt]);
+  if (status === 'open' && !justReconnected) return null;
+  const showReconnecting = status === 'connecting' || status === 'closed' || status === 'error';
+  return (
+    <motion.div
+      initial={{ y: -16, opacity: 0 }}
+      animate={{ y: 0, opacity: 1 }}
+      exit={{ y: -16, opacity: 0 }}
+      className="fixed top-3 left-1/2 -translate-x-1/2 z-50 px-3 py-1 rounded-full text-xs font-semibold shadow-lg flex items-center gap-1.5 pointer-events-none"
+      style={{
+        background: justReconnected ? 'rgba(16,185,129,0.95)' : 'rgba(244,63,94,0.95)',
+        color: 'white',
+      }}
+      role="status"
+      aria-live="polite"
+    >
+      {justReconnected
+        ? <>● Reconnected</>
+        : showReconnecting
+          ? <>
+              <span className="inline-block w-2 h-2 rounded-full bg-white animate-pulse" />
+              Reconnecting{attempt > 1 ? ` (${attempt})` : ''}…
+            </>
+          : null}
+    </motion.div>
   );
 }
 
