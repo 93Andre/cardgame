@@ -437,7 +437,7 @@ function HandStack({ count }: { count: number }) {
 }
 
 function PlayerArea({ player, isCurrent, isViewer, isSpectatorFocus, onSpectatorFocus, compact, faceDownClickable, onFaceDownClick, emotes,
-  faceUpClickable, onFaceUpClick, selectedFaceUpIds, turnElapsedMs, recentlyActed }: {
+  faceUpClickable, onFaceUpClick, selectedFaceUpIds, turnElapsedMs, recentlyActed, avatar }: {
   player: Player; isCurrent: boolean; isViewer: boolean; compact?: boolean;
   isSpectatorFocus?: boolean;                        // spectator has this player camera-focused
   onSpectatorFocus?: () => void;                     // click handler for spectators only
@@ -447,6 +447,7 @@ function PlayerArea({ player, isCurrent, isViewer, isSpectatorFocus, onSpectator
   emotes?: { id: string; playerId: number; emoji: string }[];
   turnElapsedMs?: number;
   recentlyActed?: boolean;            // 600ms pulse on whoever just played — table-wide readability.
+  avatar?: string | null;             // avatar key for the small pip beside the name
 }) {
   const c = colorFor(player.id);
   // Compact mode: tighter padding, smaller text, face-up + face-down rendered side-by-side
@@ -478,8 +479,8 @@ function PlayerArea({ player, isCurrent, isViewer, isSpectatorFocus, onSpectator
         </div>
       )}
       <div className={`flex items-center justify-between ${compact ? 'gap-1' : 'gap-2'}`}>
-        <span className={`font-semibold flex items-center gap-1 truncate ${compact ? 'text-[11px]' : ''}`}>
-          <span className={`inline-block w-2 h-2 rounded-full ${c.dot}`} />
+        <span className={`font-semibold flex items-center gap-1.5 truncate ${compact ? 'text-[11px]' : ''}`}>
+          <Avatar avatar={avatar} name={player.name} size="sm" />
           <span className="truncate">{player.name}</span>
           {!compact && player.isAi && <span className="text-[10px] px-1 py-0.5 bg-gray-200 rounded">AI</span>}
           {!compact && isViewer && <span className="text-[10px] text-emerald-700">(you)</span>}
@@ -1766,6 +1767,294 @@ const LOG_TONE_ICON: Record<LogTone, string> = {
   seven: '🔒', cut: '✂', chain: '↪', win: '🏆', flip: '🔍', info: '·',
 };
 
+/* ---- Visual replay (parses the log into events, plays them back) ---- */
+
+type ReplayEvent =
+  | { kind: 'play';       actor: string; cards: { rank: string; suit: string }[] }
+  | { kind: 'cut';        actor: string; cards: { rank: string; suit: string }[] }
+  | { kind: 'chain';      actor: string; cards: { rank: string; suit: string }[] }
+  | { kind: 'pickup';     actor: string; count: number }
+  | { kind: 'revealPickup'; actor: string; count: number }
+  | { kind: 'revealShown'; actor: string; rank: string; suit: string }
+  | { kind: 'flip';       actor: string; rank: string; suit: string; legal: boolean; pickedUp?: number }
+  | { kind: 'burnTen';    count: number }
+  | { kind: 'burnFour';   count: number; fourThrees: boolean }
+  | { kind: 'reset' }
+  | { kind: 'reverse' }
+  | { kind: 'reverseCut' }
+  | { kind: 'skip' }
+  | { kind: 'seven' }
+  | { kind: 'out';        actor: string; place: number }
+  | { kind: 'end';        loser: string }
+  | { kind: 'info';       line: string };
+
+const CARD_RE = /(JK|10|[2-9JQKA])([♠♥♦♣★])/g;
+function extractCards(line: string): { rank: string; suit: string }[] {
+  const out: { rank: string; suit: string }[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = CARD_RE.exec(line))) out.push({ rank: m[1], suit: m[2] });
+  CARD_RE.lastIndex = 0;
+  return out;
+}
+
+// Order matters — most specific patterns first so e.g. "8 played — next
+// player is skipped" routes to 'skip' rather than 'play'.
+function parseLine(line: string): ReplayEvent {
+  if (/Pile burned by 10/.test(line)) {
+    const m = line.match(/\((\d+) cards/);
+    return { kind: 'burnTen', count: m ? +m[1] : 0 };
+  }
+  if (/Four of a kind/.test(line)) {
+    const m = line.match(/\((\d+) cards/);
+    return { kind: 'burnFour', count: m ? +m[1] : 0, fourThrees: /four 3s/.test(line) };
+  }
+  if (/pile reset/.test(line))               return { kind: 'reset' };
+  if (/direction reversed/.test(line))       return { kind: 'reverse' };
+  if (/direction unchanged/.test(line))      return { kind: 'reverseCut' };
+  if (/next player is skipped/.test(line))   return { kind: 'skip' };
+  if (/7-or-lower/.test(line))               return { kind: 'seven' };
+  if (/POOP HEAD/.test(line)) {
+    const m = line.match(/^(.+?) is the POOP HEAD/);
+    return { kind: 'end', loser: m ? m[1].trim() : '' };
+  }
+  if (/is OUT/.test(line)) {
+    const m = line.match(/^(.+?) is OUT \(place #(\d+)\)/);
+    return { kind: 'out', actor: m ? m[1].trim() : '', place: m ? +m[2] : 0 };
+  }
+  if (/CUT with/.test(line)) {
+    const m = line.match(/^(.+?) CUT with /);
+    return { kind: 'cut', actor: m ? m[1].trim() : '', cards: extractCards(line) };
+  }
+  if (/\bchained\b/.test(line)) {
+    const m = line.match(/^(.+?) chained /);
+    return { kind: 'chain', actor: m ? m[1].trim() : '', cards: extractCards(line) };
+  }
+  if (/picked up the pile/.test(line)) {
+    const m = line.match(/^(.+?) picked up the pile \((\d+)/);
+    return { kind: 'pickup', actor: m ? m[1].trim() : '', count: m ? +m[2] : 0 };
+  }
+  if (/picked up \d+ — must reveal/.test(line)) {
+    const m = line.match(/^(.+?) picked up (\d+)/);
+    return { kind: 'revealPickup', actor: m ? m[1].trim() : '', count: m ? +m[2] : 0 };
+  }
+  if (/revealed:/.test(line)) {
+    const m = line.match(/^(.+?) revealed:/);
+    const cards = extractCards(line);
+    return { kind: 'revealShown', actor: m ? m[1].trim() : '', rank: cards[0]?.rank ?? '', suit: cards[0]?.suit ?? '' };
+  }
+  if (/flipped face-down/.test(line)) {
+    const m = line.match(/^(.+?) flipped face-down /);
+    const cards = extractCards(line);
+    return { kind: 'flip', actor: m ? m[1].trim() : '', rank: cards[0]?.rank ?? '', suit: cards[0]?.suit ?? '', legal: true };
+  }
+  if (/flipped .+ — illegal/.test(line)) {
+    const m = line.match(/^(.+?) flipped /);
+    const m2 = line.match(/Picks up (\d+)/);
+    const cards = extractCards(line);
+    return { kind: 'flip', actor: m ? m[1].trim() : '', rank: cards[0]?.rank ?? '', suit: cards[0]?.suit ?? '', legal: false, pickedUp: m2 ? +m2[1] : 0 };
+  }
+  if (/ played /.test(line)) {
+    const m = line.match(/^(.+?) played /);
+    return { kind: 'play', actor: m ? m[1].trim() : '', cards: extractCards(line) };
+  }
+  return { kind: 'info', line };
+}
+
+function eventDurationMs(ev: ReplayEvent): number {
+  switch (ev.kind) {
+    case 'play': case 'chain': case 'cut':           return 850;
+    case 'pickup': case 'revealPickup':              return 1400;
+    case 'burnTen': case 'burnFour':                 return 1300;
+    case 'reverse': case 'reverseCut':
+    case 'skip': case 'seven': case 'reset':         return 950;
+    case 'flip':                                     return 1100;
+    case 'revealShown':                              return 1100;
+    case 'out':                                      return 1600;
+    case 'end':                                      return 2500;
+    default:                                         return 500;
+  }
+}
+
+// Synthesise a Card object so we can reuse <CardFace> for the visual.
+function synthCard(rank: string, suit: string): Card {
+  return { id: `replay-${rank}-${suit}-${Math.random().toString(36).slice(2, 6)}`, rank: rank as Rank, suit: suit as Suit };
+}
+
+// Apply an event to a virtual pile so we can show the pile state at each step.
+function applyToPile(pile: Card[], ev: ReplayEvent): Card[] {
+  switch (ev.kind) {
+    case 'play': case 'chain': case 'cut':
+      return [...pile, ...ev.cards.map(c => synthCard(c.rank, c.suit))];
+    case 'flip':
+      return ev.legal ? [...pile, synthCard(ev.rank, ev.suit)] : [];
+    case 'pickup': case 'revealPickup':
+    case 'burnTen': case 'burnFour':
+      return [];
+    default:
+      return pile;
+  }
+}
+
+function eventLabel(ev: ReplayEvent): { actor: string; text: string; tone: string; banner?: string } {
+  const fmtCards = (cs: { rank: string; suit: string }[]) =>
+    cs.map(c => `${c.rank === 'JK' ? 'J' : c.rank}${c.suit}`).join(' + ');
+  switch (ev.kind) {
+    case 'play':         return { actor: ev.actor, text: `played ${fmtCards(ev.cards)}`, tone: 'text-white' };
+    case 'chain':        return { actor: ev.actor, text: `chained ${fmtCards(ev.cards)}`, tone: 'text-emerald-300', banner: '↪ CHAIN' };
+    case 'cut':          return { actor: ev.actor, text: `CUT with ${fmtCards(ev.cards)}`, tone: 'text-fuchsia-300', banner: '✂ CUT' };
+    case 'pickup':       return { actor: ev.actor, text: `picked up ${ev.count} card${ev.count === 1 ? '' : 's'}`, tone: 'text-amber-300', banner: '📥 PICKUP' };
+    case 'revealPickup': return { actor: ev.actor, text: `picked up ${ev.count} — must reveal`, tone: 'text-amber-300', banner: '📥 PICKUP' };
+    case 'revealShown':  return { actor: ev.actor, text: `revealed ${ev.rank}${ev.suit}`, tone: 'text-indigo-300' };
+    case 'flip':         return ev.legal
+      ? { actor: ev.actor, text: `flipped ${ev.rank}${ev.suit} — legal!`, tone: 'text-emerald-300' }
+      : { actor: ev.actor, text: `flipped ${ev.rank}${ev.suit} — illegal! Picks up ${ev.pickedUp ?? 0}`, tone: 'text-rose-300', banner: '💢 ILLEGAL' };
+    case 'burnTen':      return { actor: '', text: `Pile burned by 10 (${ev.count} cards)`, tone: 'text-rose-300', banner: '🔥 BURN' };
+    case 'burnFour':     return { actor: '', text: `Four of a kind! ${ev.count} cards burned${ev.fourThrees ? ' (four 3s — same player)' : ''}`, tone: 'text-rose-300', banner: '🔥 4-OF-A-KIND' };
+    case 'reset':        return { actor: '', text: '2 played — pile reset', tone: 'text-sky-300', banner: '🔄 RESET' };
+    case 'reverse':      return { actor: '', text: 'King — direction reversed', tone: 'text-violet-300', banner: '↺ REVERSE' };
+    case 'reverseCut':   return { actor: '', text: 'King as cut — direction unchanged', tone: 'text-violet-300' };
+    case 'skip':         return { actor: '', text: '8 played — next player skipped', tone: 'text-amber-300', banner: '⏭ SKIP' };
+    case 'seven':        return { actor: '', text: '7 played — 7-or-lower lock', tone: 'text-pink-300' };
+    case 'out':          return { actor: ev.actor, text: `is OUT (place #${ev.place})`, tone: 'text-emerald-300', banner: ev.place === 1 ? '🏆 WINNER' : '🎉 OUT' };
+    case 'end':          return { actor: ev.loser, text: 'is the POOP HEAD!', tone: 'text-rose-300', banner: '💩 POOP HEAD' };
+    case 'info':         return { actor: '', text: ev.line, tone: 'text-white/70' };
+  }
+}
+
+function ReplayPlayer({ lines }: { lines: string[] }) {
+  const events = useMemo(() => lines.map(parseLine), [lines]);
+  const pileStates = useMemo(() => {
+    const out: Card[][] = [];
+    let pile: Card[] = [];
+    for (const ev of events) { pile = applyToPile(pile, ev); out.push(pile); }
+    return out;
+  }, [events]);
+
+  const [index, setIndex] = useState(0);
+  const [playing, setPlaying] = useState(true);
+  const [speed, setSpeed] = useState(1);
+
+  // Auto-advance while playing. Stops when reaching the end.
+  useEffect(() => {
+    if (!playing) return;
+    if (index >= events.length - 1) { setPlaying(false); return; }
+    const dur = eventDurationMs(events[index]) / speed;
+    const t = setTimeout(() => setIndex(i => Math.min(i + 1, events.length - 1)), dur);
+    return () => clearTimeout(t);
+  }, [index, playing, speed, events]);
+
+  if (events.length === 0) {
+    return <div className="p-6 text-center text-sm text-white/60">No replay data.</div>;
+  }
+
+  const current = events[index];
+  const pile = pileStates[index];
+  const top4 = pile.slice(-4);
+  const label = eventLabel(current);
+  const isAtEnd = index >= events.length - 1;
+
+  return (
+    <div className="flex flex-col bg-emerald-900 text-white">
+      {/* Stage */}
+      <div className="relative h-56 sm:h-64 overflow-hidden bg-gradient-to-br from-emerald-700 to-emerald-900">
+        {/* Soft felt vignette */}
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(255,255,255,0.08),transparent_70%)]" />
+        {/* Header line — actor + action */}
+        <div className="absolute top-3 inset-x-3 flex items-center justify-between text-sm">
+          <div className={`font-semibold ${label.tone}`}>
+            {label.actor && <span className="text-white/95">{label.actor}</span>}{label.actor && ' '}{label.text}
+          </div>
+          <div className="text-xs text-white/60 tabular-nums">{index + 1} / {events.length}</div>
+        </div>
+        {/* Pile preview — stacked top 4 cards, last one most prominent */}
+        <div className="absolute inset-0 flex items-center justify-center">
+          {top4.length === 0 ? (
+            <div className="text-white/40 text-sm italic">Pile empty</div>
+          ) : (
+            <div className="relative" style={{ width: 200, height: 130 }}>
+              {top4.map((c, i) => {
+                const offset = (i - top4.length + 1) * 14;
+                const rot = (i - top4.length + 1) * 4;
+                return (
+                  <motion.div
+                    key={c.id}
+                    initial={{ y: -40, opacity: 0, scale: 0.8, rotate: rot - 8 }}
+                    animate={{ y: 0, opacity: 1, scale: 1, rotate: rot }}
+                    transition={{ type: 'spring', stiffness: 320, damping: 26 }}
+                    className="absolute"
+                    style={{ left: 50 + offset, top: 10 - offset / 2, zIndex: i }}
+                  >
+                    <CardFace card={c} />
+                  </motion.div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        {/* Big banner overlay for noteworthy events */}
+        <AnimatePresence>
+          {label.banner && (
+            <motion.div
+              key={`banner-${index}`}
+              initial={{ opacity: 0, scale: 0.6, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              transition={{ type: 'spring', stiffness: 280, damping: 22 }}
+              className="absolute bottom-3 left-1/2 -translate-x-1/2 px-4 py-1.5 rounded-full bg-slate-900/80 backdrop-blur-md ring-1 ring-white/15 text-sm font-bold tracking-wide shadow-lg"
+            >
+              {label.banner}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* Controls */}
+      <div className="bg-slate-900/95 px-3 py-2.5 flex items-center gap-2">
+        <button
+          onClick={() => setIndex(i => Math.max(0, i - 1))}
+          className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 disabled:opacity-30 flex items-center justify-center"
+          disabled={index === 0}
+          aria-label="Previous"
+        >⏮</button>
+        <button
+          onClick={() => {
+            if (isAtEnd) { setIndex(0); setPlaying(true); return; }
+            setPlaying(p => !p);
+          }}
+          className="w-10 h-10 rounded-full bg-emerald-500 hover:bg-emerald-400 flex items-center justify-center text-lg font-bold shadow"
+          aria-label={playing ? 'Pause' : 'Play'}
+        >{isAtEnd ? '⟲' : playing ? '⏸' : '▶'}</button>
+        <button
+          onClick={() => setIndex(i => Math.min(events.length - 1, i + 1))}
+          className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 disabled:opacity-30 flex items-center justify-center"
+          disabled={isAtEnd}
+          aria-label="Next"
+        >⏭</button>
+        <input
+          type="range"
+          min={0}
+          max={events.length - 1}
+          value={index}
+          onChange={e => { setIndex(+e.target.value); setPlaying(false); }}
+          className="flex-1 accent-emerald-400"
+          aria-label="Scrub"
+        />
+        <select
+          value={speed}
+          onChange={e => setSpeed(+e.target.value)}
+          className="bg-white/10 hover:bg-white/20 text-xs rounded px-2 py-1 cursor-pointer"
+          aria-label="Speed"
+        >
+          <option value={0.5}>0.5×</option>
+          <option value={1}>1×</option>
+          <option value={2}>2×</option>
+          <option value={4}>4×</option>
+        </select>
+      </div>
+    </div>
+  );
+}
+
 function ReplayModal({ match, onClose }: { match: MatchHistoryRow; onClose: () => void }) {
   const lines = match.game_log ?? [];
   const won = match.finish_pos === 1;
@@ -1819,7 +2108,12 @@ function ReplayModal({ match, onClose }: { match: MatchHistoryRow; onClose: () =
           <ReplayStat label="Biggest"  value={match.largest_pile} />
         </div>
 
-        {/* Log timeline */}
+        {/* Visual playback — header banner + auto-advancing pile, controls,
+            scrubber. Built directly on top of the human-readable log we
+            already store, no extra DB schema. */}
+        {lines.length > 0 && <ReplayPlayer lines={lines} />}
+
+        {/* Log timeline (detail) */}
         <div className="flex-1 overflow-y-auto px-5 py-3">
           {lines.length === 0 ? (
             <div className="py-8 text-center text-sm text-gray-500">
@@ -2175,6 +2469,9 @@ function MenuScreen({ onLocal, onNetwork, onLeaderboard, onProfile, prefilledCod
   const localStatsLS = loadStats();
   const localName = loadName();
   const [signInOpen, setSignInOpen] = useState(false);
+  // Pre-select which tab the modal opens on — the menu has separate Sign-in
+  // and Create-account buttons, each deep-links to the corresponding tab.
+  const [signInTab, setSignInTab] = useState<'signin' | 'signup'>('signin');
   // Force-open the modal when the user lands here via a password-reset
   // email — the modal itself swaps into "set new password" mode.
   useEffect(() => {
@@ -2277,12 +2574,25 @@ function MenuScreen({ onLocal, onNetwork, onLeaderboard, onProfile, prefilledCod
             <button onClick={() => auth.signOut()} className="underline hover:text-white">sign out</button>
           </div>
         ) : (
-          <div className="flex items-center gap-2 text-xs text-white/85">
-            <span className="opacity-80">Playing as guest — stats save locally only.</span>
-            <button
-              onClick={() => setSignInOpen(true)}
-              className="underline hover:text-white font-semibold"
-            >Sign in to save across devices</button>
+          // Guest auth strip — a single frosted-glass tray containing both
+          // CTAs, matching the action-bar vocabulary used elsewhere. Clear
+          // hierarchy: ghost "Sign in" for returning users, solid emerald
+          // "Create account" for new ones. Each deep-links the modal to the
+          // matching tab.
+          <div className="mt-2 flex flex-col items-center gap-2">
+            <span className="text-[11px] text-white/60 tracking-wide">
+              Playing as guest. Sign in to sync stats across devices.
+            </span>
+            <div className="inline-flex items-center gap-1 p-1 rounded-full bg-slate-900/60 backdrop-blur-md ring-1 ring-white/10 shadow-lg shadow-black/20">
+              <button
+                onClick={() => { setSignInOpen(true); setSignInTab('signin'); }}
+                className="px-4 h-9 rounded-full text-white/80 text-sm font-medium hover:text-white hover:bg-white/5 active:bg-white/10 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+              >Sign in</button>
+              <button
+                onClick={() => { setSignInOpen(true); setSignInTab('signup'); }}
+                className="px-4 h-9 rounded-full bg-emerald-500 text-white text-sm font-semibold tracking-tight hover:bg-emerald-400 active:bg-emerald-600 active:scale-[0.98] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300/60"
+              >Create account</button>
+            </div>
           </div>
         )
       )}
@@ -2291,7 +2601,7 @@ function MenuScreen({ onLocal, onNetwork, onLeaderboard, onProfile, prefilledCod
 
       <AnimatePresence>
         {signInOpen && (
-          <SignInModal auth={auth} onClose={() => setSignInOpen(false)} />
+          <SignInModal auth={auth} initialTab={signInTab} onClose={() => setSignInOpen(false)} />
         )}
       </AnimatePresence>
     </div>
@@ -2305,8 +2615,8 @@ function MenuScreen({ onLocal, onNetwork, onLeaderboard, onProfile, prefilledCod
 // Password-recovery state is detected at the auth-hook level; when active
 // we swap the body for a "set new password" prompt regardless of tab.
 type AuthMode = 'signin' | 'signup';
-function SignInModal({ auth, onClose }: { auth: AuthState; onClose: () => void }) {
-  const [mode, setMode] = useState<AuthMode>('signin');
+function SignInModal({ auth, onClose, initialTab = 'signin' }: { auth: AuthState; onClose: () => void; initialTab?: AuthMode }) {
+  const [mode, setMode] = useState<AuthMode>(initialTab);
   const [email, setEmail] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -2520,9 +2830,11 @@ function SignInModal({ auth, onClose }: { auth: AuthState; onClose: () => void }
             <button
               type="submit"
               disabled={!canSubmit}
-              className={`px-4 py-2 rounded font-semibold ${canSubmit ? 'bg-indigo-500 hover:bg-indigo-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
+              className="mt-2 h-11 w-full rounded-lg bg-emerald-600 text-white text-[15px] font-semibold tracking-tight shadow-sm shadow-emerald-900/20 hover:bg-emerald-500 active:bg-emerald-700 active:scale-[0.99] transition-colors duration-150 disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 focus-visible:ring-offset-2"
             >
-              {busy ? 'Working…' : mode === 'signin' ? 'Sign in' : 'Create account'}
+              {busy
+                ? (mode === 'signin' ? 'Signing in…' : 'Creating account…')
+                : (mode === 'signin' ? 'Sign in' : 'Create account')}
             </button>
 
             {/* Secondary actions row — forgot pw + magic-link fallback */}
@@ -2805,12 +3117,14 @@ function sortCards(cards: Card[]): Card[] {
   return cards.slice().sort((a, b) => RANK_VALUE[a.rank] - RANK_VALUE[b.rank] || a.suit.localeCompare(b.suit));
 }
 
-function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat, fromDeckIds, spectatorCount }: {
+function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat, fromDeckIds, spectatorCount, avatars }: {
   state: GameState; dispatch: (a: Action) => void; viewerId: number | null;
   emotes?: { id: string; playerId: number; emoji: string }[]; onEmote?: (e: string) => void;
   chats?: ChatMsg[]; onChat?: (text: string) => void;
   fromDeckIds?: Set<string>;
   spectatorCount?: number;
+  // avatars[i] = avatar key for state.players[i], or null/undefined for default.
+  avatars?: (string | null)[];
 }) {
   const isSpectator = viewerId === -1;
   // Spectators get to pick a "camera angle" — which player's hand they're
@@ -3076,6 +3390,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
                   emotes={emotes}
                   turnElapsedMs={pp.id === state.current ? turnElapsedMs : undefined}
                   recentlyActed={pp.id === lastActorId}
+                  avatar={avatars?.[pp.id] ?? null}
                 />
               );
             };
@@ -4084,7 +4399,11 @@ function ShareRoomButton({ code, url }: { code: string; url: string }) {
 }
 
 
-function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; onLeave: () => void; prefilledCode?: string }) {
+function NetLobbyScreen({ conn, onLeave, prefilledCode, auth }: { conn: NetworkConn; onLeave: () => void; prefilledCode?: string; auth: AuthState }) {
+  // Avatar to bind to this seat — taken from the signed-in profile if any.
+  // Guests connect without one and get the default initial-letter fallback
+  // on their tile (same as their menu identity pill).
+  const myAvatar = auth.profile?.avatar ?? undefined;
   const [name, setName] = useState(() => loadName());
   const [code, setCode] = useState(prefilledCode?.toUpperCase() ?? '');
   // Public rooms appear in LIST_ROOMS and are joinable with a single click.
@@ -4143,7 +4462,7 @@ function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; o
                       if (action === 'join' && !nameTrim) return;
                       saveName(nameTrim);
                       if (action === 'spectate') conn.send({ t: 'SPECTATE', code: r.code });
-                      else                       conn.send({ t: 'JOIN', code: r.code, name: nameTrim });
+                      else                       conn.send({ t: 'JOIN', code: r.code, name: nameTrim, avatar: myAvatar });
                     };
                     return (
                       <li key={r.code}>
@@ -4221,7 +4540,7 @@ function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; o
                 disabled={!nameTrim}
                 onClick={() => {
                   saveName(nameTrim);
-                  conn.send({ t: 'CREATE', name: nameTrim, private: createPrivate });
+                  conn.send({ t: 'CREATE', name: nameTrim, private: createPrivate, avatar: myAvatar });
                 }}
                 className={`px-4 py-2 rounded font-semibold ${
                   nameTrim ? 'bg-amber-500 hover:bg-amber-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'
@@ -4237,7 +4556,7 @@ function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; o
                 disabled={!nameTrim || codeTrim.length !== 4}
                 onClick={() => {
                   saveName(nameTrim);
-                  conn.send({ t: 'JOIN', code: codeTrim, name: nameTrim });
+                  conn.send({ t: 'JOIN', code: codeTrim, name: nameTrim, avatar: myAvatar });
                 }}
                 className={`px-4 py-2 rounded font-semibold ${nameTrim && codeTrim.length === 4 ? 'bg-indigo-500 hover:bg-indigo-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
               >Join</button>
@@ -4447,7 +4766,7 @@ function useEventEffects(log: string[], resetKey: any): { toasts: Toast[] } {
 
 /* ============== Local-mode App ============== */
 
-function LocalGame({ humans, ais, aiSpeed, aiDifficulty, onExit }: { humans: number; ais: number; aiSpeed: number; aiDifficulty: AiDifficulty; onExit: () => void }) {
+function LocalGame({ humans, ais, aiSpeed, aiDifficulty, onExit, auth }: { humans: number; ais: number; aiSpeed: number; aiDifficulty: AiDifficulty; onExit: () => void; auth: AuthState }) {
   const init = useMemo(() => {
     const total = humans + ais;
     const names = [
@@ -4591,6 +4910,21 @@ function LocalGame({ humans, ais, aiSpeed, aiDifficulty, onExit }: { humans: num
     }
   }, [state.phase]);
 
+  // Local-mode avatars: human seats use auth's avatar (only player 0 in
+  // typical solo-vs-AI; multiplayer hot-seat is rare and we let them all
+  // share the user's avatar — pragmatic compromise). AI seats cycle through
+  // a themed pool keyed by their AI-index for visual variety.
+  const localAvatars = useMemo(() => {
+    const aiAvatars = ['wolf', 'fox', 'eagle', 'dragon', 'shark', 'snake'];
+    let aiSeen = 0;
+    return state.players.map(p => {
+      if (!p.isAi) return auth.profile?.avatar ?? null;
+      const av = aiAvatars[aiSeen % aiAvatars.length];
+      aiSeen++;
+      return av;
+    });
+  }, [state.players, auth.profile?.avatar]);
+
   const restart = () => dispatch({
     type: 'NEW_GAME',
     playerCount: humans + ais,
@@ -4605,17 +4939,17 @@ function LocalGame({ humans, ais, aiSpeed, aiDifficulty, onExit }: { humans: num
       case 'swap': body = <SwapScreen state={state} dispatch={dispatch} viewerId={null} />; break;
       case 'pass':
         body = shouldSkipPass
-          ? <PlayScreen state={state} dispatch={dispatch} viewerId={localViewerId} fromDeckIds={fromDeckIds} />
+          ? <PlayScreen state={state} dispatch={dispatch} viewerId={localViewerId} fromDeckIds={fromDeckIds} avatars={localAvatars} />
           : <PassScreen state={state} dispatch={dispatch} />;
         break;
-      case 'play': body = <PlayScreen state={state} dispatch={dispatch} viewerId={localViewerId} fromDeckIds={fromDeckIds} />; break;
+      case 'play': body = <PlayScreen state={state} dispatch={dispatch} viewerId={localViewerId} fromDeckIds={fromDeckIds} avatars={localAvatars} />; break;
       case 'flipFaceDown': body = <FlipScreen state={state} dispatch={dispatch} viewerId={localViewerId} />; break;
       // Keep the table mounted under the reveal modal so the pile-pickup
       // animation fires the moment the log line lands. The modal sits on top
       // and absorbs all interaction.
       case 'reveal': body = (
         <>
-          <PlayScreen state={state} dispatch={dispatch} viewerId={localViewerId} fromDeckIds={fromDeckIds} />
+          <PlayScreen state={state} dispatch={dispatch} viewerId={localViewerId} fromDeckIds={fromDeckIds} avatars={localAvatars} />
           <RevealChoiceScreen state={state} dispatch={dispatch} viewerId={localViewerId} />
         </>
       ); break;
@@ -4648,7 +4982,7 @@ function LocalGame({ humans, ais, aiSpeed, aiDifficulty, onExit }: { humans: num
 
 /* ============== Network-mode App ============== */
 
-function NetworkGame({ onExit, prefilledCode }: { onExit: () => void; prefilledCode?: string }) {
+function NetworkGame({ onExit, prefilledCode, auth }: { onExit: () => void; prefilledCode?: string; auth: AuthState }) {
   const conn = useNetwork(true);
   const { toasts } = useEventEffects(conn.state?.log ?? [], conn.lobby?.code);
   const { dealing, finishDeal } = useDealAnimationGate(conn.state);
@@ -4657,6 +4991,9 @@ function NetworkGame({ onExit, prefilledCode }: { onExit: () => void; prefilledC
   const fromDeckIds = useFromDeckTracker(conn.state, myId);
 
   const dispatch = (action: Action) => conn.send({ t: 'ACT', action });
+  // Pull avatars from the lobby per seat (online players supply their own
+  // avatar on JOIN/CREATE; AIs get themed defaults assigned by the server).
+  const netAvatars = conn.lobby?.players.map(p => p.avatar) ?? [];
 
   // End-of-game sound: the loser hears the fahhhh sample; everyone else hears the win arpeggio.
   const endedRef = useRef(false);
@@ -4699,7 +5036,7 @@ function NetworkGame({ onExit, prefilledCode }: { onExit: () => void; prefilledC
 
   let body: React.ReactNode;
   if (!conn.state) {
-    body = <NetLobbyScreen conn={conn} onLeave={() => { conn.disconnect(); onExit(); }} prefilledCode={prefilledCode} />;
+    body = <NetLobbyScreen conn={conn} onLeave={() => { conn.disconnect(); onExit(); }} prefilledCode={prefilledCode} auth={auth} />;
   } else {
     const viewerId = myId;
     const onEmote = (e: string) => conn.send({ t: 'EMOTE', emoji: e });
@@ -4707,13 +5044,13 @@ function NetworkGame({ onExit, prefilledCode }: { onExit: () => void; prefilledC
     switch (conn.state.phase) {
       case 'swap': body = <SwapScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} />; break;
       case 'pass':
-      case 'play': body = <PlayScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} emotes={conn.lobby?.emotes} onEmote={onEmote} chats={conn.lobby?.chats} onChat={onChat} fromDeckIds={fromDeckIds} spectatorCount={conn.lobby?.spectatorCount} />; break;
+      case 'play': body = <PlayScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} emotes={conn.lobby?.emotes} onEmote={onEmote} chats={conn.lobby?.chats} onChat={onChat} fromDeckIds={fromDeckIds} spectatorCount={conn.lobby?.spectatorCount} avatars={netAvatars} />; break;
       case 'flipFaceDown': body = <FlipScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} />; break;
       // Same trick as local mode: keep PlayScreen alive under the reveal modal
       // so its log-watch effect fires the pile-pickup animation.
       case 'reveal': body = (
         <>
-          <PlayScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} emotes={conn.lobby?.emotes} onEmote={onEmote} chats={conn.lobby?.chats} onChat={onChat} fromDeckIds={fromDeckIds} spectatorCount={conn.lobby?.spectatorCount} />
+          <PlayScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} emotes={conn.lobby?.emotes} onEmote={onEmote} chats={conn.lobby?.chats} onChat={onChat} fromDeckIds={fromDeckIds} spectatorCount={conn.lobby?.spectatorCount} avatars={netAvatars} />
           <RevealChoiceScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} />
         </>
       ); break;
@@ -4847,8 +5184,8 @@ export default function App() {
   else if (mode === 'leaderboard') body = <LeaderboardScreen onBack={() => setMode('menu')} auth={auth} />;
   else if (mode === 'profile') body = <ProfileScreen onBack={() => setMode('menu')} auth={auth} />;
   else if (mode === 'localSetup') body = <LocalSetupScreen onStart={(h, a, d) => { setLocalCfg({ humans: h, ais: a, aiDifficulty: d }); setMode('local'); }} onBack={() => setMode('menu')} />;
-  else if (mode === 'local' && localCfg) body = <LocalGame humans={localCfg.humans} ais={localCfg.ais} aiSpeed={aiSpeed} aiDifficulty={localCfg.aiDifficulty} onExit={() => setMode('menu')} />;
-  else if (mode === 'network') body = <NetworkGame onExit={() => setMode('menu')} prefilledCode={urlRoom} />;
+  else if (mode === 'local' && localCfg) body = <LocalGame humans={localCfg.humans} ais={localCfg.ais} aiSpeed={aiSpeed} aiDifficulty={localCfg.aiDifficulty} onExit={() => setMode('menu')} auth={auth} />;
+  else if (mode === 'network') body = <NetworkGame onExit={() => setMode('menu')} prefilledCode={urlRoom} auth={auth} />;
 
   return (
     <div className="min-h-full w-full overflow-auto">

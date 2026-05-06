@@ -23,6 +23,7 @@ interface RoomPlayer {
   conn: Party.Connection | null;
   token: string;
   isAi: boolean;
+  avatar: string | null;
 }
 
 interface Emote {
@@ -72,6 +73,15 @@ function makeToken(): string {
   return crypto.randomUUID().replace(/-/g, '');
 }
 
+// Defensive sanitiser for the avatar key supplied by clients. Mirrors the
+// server-side check on profiles.avatar.
+function sanitizeAvatar(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const t = v.trim();
+  if (!t || t.length > 32) return null;
+  return /^[a-z0-9_-]+$/.test(t) ? t : null;
+}
+
 export default class GameServer implements Party.Server {
   rooms = new Map<string, Room>();
 
@@ -87,7 +97,7 @@ export default class GameServer implements Party.Server {
       this.rooms.set(r.code, {
         code: r.code,
         hostId: r.hostId,
-        players: r.players.map((p: any) => ({ ...p, conn: null })),
+        players: r.players.map((p: any) => ({ ...p, conn: null, avatar: typeof p.avatar === 'string' ? p.avatar : null })),
         spectators: new Set(),
         state: r.state ?? null,
         emotes: r.emotes ?? [],
@@ -104,7 +114,7 @@ export default class GameServer implements Party.Server {
     const dump = [...this.rooms.values()].map(r => ({
       code: r.code,
       hostId: r.hostId,
-      players: r.players.map(p => ({ id: p.id, name: p.name, token: p.token, isAi: p.isAi })),
+      players: r.players.map(p => ({ id: p.id, name: p.name, token: p.token, isAi: p.isAi, avatar: p.avatar })),
       state: r.state,
       emotes: r.emotes,
       chats: r.chats,
@@ -170,6 +180,7 @@ export default class GameServer implements Party.Server {
         name: p.name,
         connected: p.isAi || p.conn !== null,
         isAi: p.isAi,
+        avatar: p.avatar ?? null,
       })),
       emotes: room.emotes.slice(-5),
       chats: room.chats.slice(-30),
@@ -328,12 +339,13 @@ export default class GameServer implements Party.Server {
       case 'CREATE': {
         const name = String(msg.name ?? '').slice(0, 24).trim() || 'Player 1';
         const isPrivate = msg.private === true;
+        const avatar = sanitizeAvatar(msg.avatar);
         const code = this.makeCode();
         const token = makeToken();
         const now = Date.now();
         const room: Room = {
           code, hostId: 0,
-          players: [{ id: 0, name, conn: sender, token, isAi: false }],
+          players: [{ id: 0, name, conn: sender, token, isAi: false, avatar }],
           spectators: new Set(),
           state: null,
           emotes: [],
@@ -360,8 +372,9 @@ export default class GameServer implements Party.Server {
         // the join itself is unguarded once you have the code.
         const id = room.players.length;
         const name = String(msg.name ?? '').slice(0, 24).trim() || `Player ${id + 1}`;
+        const avatar = sanitizeAvatar(msg.avatar);
         const token = makeToken();
-        room.players.push({ id, name, conn: sender, token, isAi: false });
+        room.players.push({ id, name, conn: sender, token, isAi: false, avatar });
         room.abandonedAt = undefined;
         sender.setState({ code, id, spectator: false } satisfies ConnState);
         this.send(sender, { t: 'SESSION', code, id, token });
@@ -409,7 +422,8 @@ export default class GameServer implements Party.Server {
         if (room.players.length >= MAX_PLAYERS) return this.err(sender, 'Room full');
         const id = room.players.length;
         const aiNum = room.players.filter(p => p.isAi).length + 1;
-        room.players.push({ id, name: `AI ${aiNum}`, conn: null, token: makeToken(), isAi: true });
+        const aiAvatars = ['wolf', 'fox', 'eagle', 'dragon', 'shark', 'snake'];
+        room.players.push({ id, name: `AI ${aiNum}`, conn: null, token: makeToken(), isAi: true, avatar: aiAvatars[(aiNum - 1) % aiAvatars.length] });
         this.broadcast(room);
         this.persist();
         return;

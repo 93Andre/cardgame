@@ -23,6 +23,7 @@ interface RoomPlayer {
   ws: WebSocket | null;
   token: string;            // session token for resume
   isAi: boolean;
+  avatar: string | null;    // emoji-avatar key, or null for default
 }
 
 interface Emote {
@@ -89,6 +90,16 @@ function makeCode(): string {
   return code;
 }
 
+// Defensive sanitiser for the avatar key supplied by clients. Mirrors the
+// server-side check on profiles.avatar — short, alphanumeric+hyphen+underscore,
+// or null if missing/invalid. Catalogue mapping is purely client-side.
+function sanitizeAvatar(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const t = v.trim();
+  if (!t || t.length > 32) return null;
+  return /^[a-z0-9_-]+$/.test(t) ? t : null;
+}
+
 function makeToken(): string {
   return randomBytes(16).toString('hex');
 }
@@ -98,7 +109,7 @@ function persist() {
     const dump = [...rooms.values()].map(r => ({
       code: r.code,
       hostId: r.hostId,
-      players: r.players.map(p => ({ id: p.id, name: p.name, token: p.token, isAi: p.isAi })),
+      players: r.players.map(p => ({ id: p.id, name: p.name, token: p.token, isAi: p.isAi, avatar: p.avatar })),
       state: r.state,
       emotes: r.emotes,
       chats: r.chats,
@@ -124,7 +135,7 @@ function loadPersisted() {
       rooms.set(r.code, {
         code: r.code,
         hostId: r.hostId,
-        players: r.players.map((p: any) => ({ ...p, ws: null })),
+        players: r.players.map((p: any) => ({ ...p, ws: null, avatar: typeof p.avatar === 'string' ? p.avatar : null })),
         spectators: new Set(),
         state: r.state ?? null,
         emotes: r.emotes ?? [],
@@ -182,6 +193,7 @@ function lobbyView(room: Room, viewerId: number) {
       name: p.name,
       connected: p.isAi || p.ws !== null,
       isAi: p.isAi,
+      avatar: p.avatar ?? null,
     })),
     emotes: room.emotes.slice(-5),
     chats: room.chats.slice(-30),
@@ -361,13 +373,14 @@ wss.on('connection', ws => {
       case 'CREATE': {
         const name = String(msg.name ?? '').slice(0, 24).trim() || 'Player 1';
         const isPrivate = msg.private === true;
+        const avatar = sanitizeAvatar(msg.avatar);
         const code = makeCode();
         const token = makeToken();
         const now = Date.now();
         const room: Room = {
           code,
           hostId: 0,
-          players: [{ id: 0, name, ws, token, isAi: false }],
+          players: [{ id: 0, name, ws, token, isAi: false, avatar }],
           spectators: new Set(),
           state: null,
           emotes: [],
@@ -395,8 +408,9 @@ wss.on('connection', ws => {
         // force the code (~1M space, room TTL caps the attempt window).
         const id = room.players.length;
         const name = String(msg.name ?? '').slice(0, 24).trim() || `Player ${id + 1}`;
+        const avatar = sanitizeAvatar(msg.avatar);
         const token = makeToken();
-        room.players.push({ id, name, ws, token, isAi: false });
+        room.players.push({ id, name, ws, token, isAi: false, avatar });
         socketToRoom.set(ws, { code, id, spectator: false });
         send(ws, { t: 'SESSION', code, id, token });
         broadcast(room);
@@ -445,7 +459,10 @@ wss.on('connection', ws => {
         if (room.players.length >= MAX_PLAYERS) return err(ws, 'Room full');
         const id = room.players.length;
         const aiNum = room.players.filter(p => p.isAi).length + 1;
-        room.players.push({ id, name: `AI ${aiNum}`, ws: null, token: makeToken(), isAi: true });
+        // AI seats get a themed avatar so the table never has a blank slot. Cycle
+        // through a small pool keyed by the AI's seat index for visual variety.
+        const aiAvatars = ['wolf', 'fox', 'eagle', 'dragon', 'shark', 'snake'];
+        room.players.push({ id, name: `AI ${aiNum}`, ws: null, token: makeToken(), isAi: true, avatar: aiAvatars[(aiNum - 1) % aiAvatars.length] });
         broadcast(room);
         persist();
         return;
