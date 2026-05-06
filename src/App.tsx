@@ -1909,38 +1909,49 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
             )}
           </div>
 
-          {/* Action bar — sticky at the bottom and ALWAYS rendered (when not a
-              spectator and not in the face-down phase) so the layout never
-              shifts when turns change. Buttons gray out when they aren't
-              actionable instead of disappearing. */}
+          {/* Action bar — sticky, always-mounted, always one row. Modern
+              segmented control aesthetic: a single dark glass tray holds
+              compact Play / Pick-up pills + an optional Cut. Disabled state
+              is a faded outline rather than a chunky gray block. The
+              "no legal play" hint sits inside the tray as a subtle caption,
+              not a layout-breaking sentence on its own line. */}
           {!isSpectator && src !== 'faceDown' && (
-            <div className="sticky bottom-0 left-0 right-0 z-20 mt-2 pb-3 pt-2 px-3 -mx-3 sm:-mx-4 flex items-center gap-2 flex-wrap justify-center bg-gradient-to-t from-emerald-950/80 via-emerald-900/40 to-transparent">
-              {isMyTurn && !anyLegal && src && (
-                <span className="text-xs text-rose-200 italic mr-1">No legal play — pick up.</span>
-              )}
-              <button
-                disabled={!canPlay}
-                onClick={() => dispatch({ type: 'PLAY_SELECTED' })}
-                className={`px-5 py-2.5 sm:px-6 sm:py-3 rounded-xl text-sm sm:text-base font-bold flex items-center gap-2 shadow-lg transition-all ${canPlay ? 'bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-white' : 'bg-stone-700/70 text-stone-400 cursor-not-allowed'}`}
-              >
-                <span className="text-lg">▶</span> Play
-              </button>
-              <button
-                disabled={!isMyTurn || state.pile.length === 0}
-                onClick={() => dispatch({ type: 'PICKUP_PILE' })}
-                className={`px-5 py-2.5 sm:px-6 sm:py-3 rounded-xl text-sm sm:text-base font-bold flex items-center gap-2 shadow-lg transition-all ${isMyTurn && state.pile.length > 0 ? 'bg-rose-500 hover:bg-rose-400 active:scale-95 text-white' : 'bg-stone-700/70 text-stone-400 cursor-not-allowed'}`}
-              >
-                <span className="text-lg">⤴</span> Pick up
-              </button>
-              {canCut && (
-                <motion.button
-                  initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
-                  whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
-                  onClick={() => dispatch({ type: 'CUT', player: viewer, ids: myCutMatches.map(c => c.id) })}
-                  className="px-5 py-2.5 sm:px-6 sm:py-3 rounded-xl text-sm sm:text-base font-bold flex items-center gap-2 bg-fuchsia-600 hover:bg-fuchsia-500 active:scale-95 text-white shadow-lg animate-pulse"
-                  title={`Cut with ${myCutMatches.map(c => c.rank + c.suit).join(', ')}`}
-                >✂ CUT ({myCutMatches.length})</motion.button>
-              )}
+            <div className="sticky bottom-0 left-0 right-0 z-20 mt-2 pb-3 pt-2 px-3 -mx-3 sm:-mx-4 flex items-center gap-2 justify-center pointer-events-none">
+              <div className="flex items-center gap-1.5 p-1 rounded-full bg-slate-900/80 backdrop-blur-md ring-1 ring-white/10 shadow-[0_8px_24px_rgba(0,0,0,0.45)] pointer-events-auto">
+                <button
+                  disabled={!canPlay}
+                  onClick={() => dispatch({ type: 'PLAY_SELECTED' })}
+                  className={`px-4 sm:px-5 h-9 sm:h-10 rounded-full text-sm font-semibold flex items-center gap-1.5 transition-all ${
+                    canPlay
+                      ? 'bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-white shadow-[0_4px_12px_rgba(16,185,129,0.45)]'
+                      : 'text-white/35 cursor-not-allowed'
+                  }`}
+                >
+                  <span aria-hidden>▶</span> Play
+                </button>
+                <button
+                  disabled={!isMyTurn || state.pile.length === 0}
+                  onClick={() => dispatch({ type: 'PICKUP_PILE' })}
+                  className={`px-4 sm:px-5 h-9 sm:h-10 rounded-full text-sm font-semibold flex items-center gap-1.5 transition-all ${
+                    isMyTurn && state.pile.length > 0
+                      ? (!anyLegal && src
+                          ? 'bg-rose-500 hover:bg-rose-400 active:scale-95 text-white shadow-[0_4px_12px_rgba(244,63,94,0.45)] ring-2 ring-rose-300/60'
+                          : 'bg-white/10 hover:bg-white/20 active:scale-95 text-white')
+                      : 'text-white/35 cursor-not-allowed'
+                  }`}
+                >
+                  <span aria-hidden>⤴</span> Pick up
+                </button>
+                {canCut && (
+                  <motion.button
+                    initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={() => dispatch({ type: 'CUT', player: viewer, ids: myCutMatches.map(c => c.id) })}
+                    className="px-4 sm:px-5 h-9 sm:h-10 rounded-full text-sm font-semibold flex items-center gap-1.5 bg-fuchsia-600 hover:bg-fuchsia-500 active:scale-95 text-white shadow-[0_4px_12px_rgba(232,121,249,0.55)] animate-pulse"
+                    title={`Cut with ${myCutMatches.map(c => c.rank + c.suit).join(', ')}`}
+                  >✂ CUT <span className="opacity-70 font-normal">{myCutMatches.length}</span></motion.button>
+                )}
+              </div>
             </div>
           )}
 
