@@ -184,15 +184,14 @@ class SoundEngine {
       case 'win': [523, 659, 784, 1046].forEach((f, i) => this.tone(f, 0.22, 'triangle', 0.18, i * 0.12)); break;
       case 'click': this.tone(880, 0.03, 'square', 0.06); break;
       case 'emote': this.tone(750, 0.06, 'triangle', 0.10); break;
-      // Your-turn chime: bright ascending two-note ding (E5 → B5) plus a
-      // sparkle harmonic (E6). Higher frequencies than every other game
-      // sound so it cuts through any overlapping play / pickup / reveal
-      // sfx that fire on the same React tick. Gain is boosted a notch
-      // above other cues since it's the call-to-action.
+      // Your-turn chime: soft ascending two-note ding (A4 → E5). Quieter
+      // and lower-pitched than the previous version — the goal is a polite
+      // nudge, not an alert. The 180ms delay before this fires (in the
+      // GameScreen effect) still keeps it from being masked by overlapping
+      // gameplay sfx, even at this lower gain.
       case 'yourTurn': {
-        this.tone(659.25,  0.16, 'sine',     0.32);          // E5 head
-        this.tone(987.77,  0.26, 'sine',     0.28, 0.09);    // B5 ascending
-        this.tone(1318.51, 0.22, 'triangle', 0.12, 0.09);    // E6 sparkle
+        this.tone(440,    0.13, 'sine', 0.13);          // A4 head
+        this.tone(659.25, 0.20, 'sine', 0.11, 0.07);    // E5 ascending
         break;
       }
     }
