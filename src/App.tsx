@@ -577,22 +577,17 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
           table's non-uniform aspect ratio. `directionFlashKey` re-keys the
           group so a King reversal replays the flash animation. */}
       {(() => {
-        const N = 28;
-        // Direction of motion at parametric angle θ (measured CW from north on
-        // an ellipse with rx/ry semi-axes). dx/dθ ∝ cos θ, dy/dθ ∝ -sin θ when
-        // θ is measured CW from north. We need the screen-space angle of
-        // (cos θ * rx, sin θ * ry) → atan2(sin θ * ry, cos θ * rx). The tangent
-        // is the derivative: ( cos θ * rx, -sin θ * ry ) — but the visual
-        // "stretch" is already absorbed by rx/ry being expressed in % of width
-        // and height respectively, so a uniform tangent angle reads correctly.
+        // Density tracks the actual rendered ring size: a portrait phone has a
+        // tighter ellipse where 28 chevrons crowd; a desktop table has plenty
+        // of perimeter for more without looking busy.
+        const N = layout === 'desktop' ? 32 : layout === 'landscape' ? 26 : 22;
+        const PERIOD = 2.0;     // seconds for the chase wave to complete one lap
         return Array.from({ length: N }).map((_, i) => {
           const theta = (i / N) * 360;
           const xPct = 50 + Math.sin(theta * Math.PI / 180) * rx * 100;
           const yPct = 50 - Math.cos(theta * Math.PI / 180) * ry * 100;
           const rot = direction === 1 ? theta : theta + 180;
-          // Chase: each chevron's pulse is offset by its position around the
-          // ring, so the bright spot traces a lap of the table per cycle.
-          const phaseDelay = -(i / N) * 2.4;
+          const phaseDelay = -(i / N) * PERIOD;
           const flipDelay = i * 0.012;
           return (
             <div

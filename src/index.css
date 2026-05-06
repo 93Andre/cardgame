@@ -9,7 +9,7 @@
   0%, 100% { opacity: 0.30; }
   50%      { opacity: 0.95; }
 }
-.table-flow-chase { animation: table-flow-chase 2.4s ease-in-out infinite; }
+.table-flow-chase { animation: table-flow-chase 2.0s ease-in-out infinite; }
 
 /* King reversal: brief whoosh as the chevrons flip direction. */
 @keyframes table-flow-flip {
