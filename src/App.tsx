@@ -569,30 +569,34 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
         {direction === 1 ? '↻' : '↺'}
       </div>
 
-      {/* Direction-of-play track: a ring of small chevrons placed around the
-          ellipse, each rotated along the tangent so they all "point" the way
-          play is moving. A staggered opacity wave chases around the ring so the
-          flow is obvious even on a still screenshot. Real DOM elements (not
-          SVG textPath) so the chevron shape doesn't get distorted by the
-          table's non-uniform aspect ratio. `directionFlashKey` re-keys the
-          group so a King reversal replays the flash animation. */}
+      {/* Direction-of-play arrows: four long, clean SVG arrows placed along
+          the diagonals of the ellipse (between player tiles, where the
+          perimeter is mostly empty), each rotated along the tangent so they
+          all sweep in the current play direction. A staggered chase wave
+          highlights them in sequence so the direction is obvious even on a
+          still screenshot. Real DOM elements (not the parent stretched SVG)
+          so the arrow shape stays proportional regardless of table aspect
+          ratio. `directionFlashKey` re-keys the group so a King reversal
+          replays the flash animation. */}
       {(() => {
-        // Density tracks the actual rendered ring size: a portrait phone has a
-        // tighter ellipse where 28 chevrons crowd; a desktop table has plenty
-        // of perimeter for more without looking busy.
-        const N = layout === 'desktop' ? 32 : layout === 'landscape' ? 26 : 22;
-        const PERIOD = 2.0;     // seconds for the chase wave to complete one lap
-        return Array.from({ length: N }).map((_, i) => {
-          const theta = (i / N) * 360;
+        const angles = [45, 135, 225, 315];   // diagonal sweet spots
+        const PERIOD = 2.0;
+        // Arrow length scales with layout — desktop has more perimeter to fill.
+        const lenPx = layout === 'desktop' ? 110 : layout === 'landscape' ? 90 : 72;
+        return angles.map((theta, i) => {
           const xPct = 50 + Math.sin(theta * Math.PI / 180) * rx * 100;
           const yPct = 50 - Math.cos(theta * Math.PI / 180) * ry * 100;
-          const rot = direction === 1 ? theta : theta + 180;
-          const phaseDelay = -(i / N) * PERIOD;
-          const flipDelay = i * 0.012;
+          // Tangent direction at this θ — the chevron points the way play
+          // moves. Subtract 90 because the SVG arrow is drawn pointing right
+          // (east, 0°) and rotation 0 should align with theta=90 tangent.
+          const baseRot = theta;
+          const rot = direction === 1 ? baseRot : baseRot + 180;
+          const phaseDelay = -(i / angles.length) * PERIOD;
+          const flipDelay = i * 0.04;
           return (
             <div
-              key={`chevron-${i}-${directionFlashKey ?? 0}`}
-              className="absolute text-emerald-100 text-sm sm:text-base font-bold select-none pointer-events-none table-flow-chase table-flow-flip drop-shadow-[0_1px_2px_rgba(0,0,0,0.45)]"
+              key={`arrow-${i}-${directionFlashKey ?? 0}`}
+              className="absolute select-none pointer-events-none table-flow-chase table-flow-flip drop-shadow-[0_2px_4px_rgba(0,0,0,0.5)]"
               style={{
                 left: `${xPct}%`,
                 top: `${yPct}%`,
@@ -601,7 +605,20 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
               }}
               aria-hidden
             >
-              ›
+              <svg width={lenPx} height={lenPx * 0.18} viewBox="0 0 100 18" className="overflow-visible">
+                {/* Shaft: thin, with a soft fade at the tail so it reads as a
+                    streak rather than a bar. */}
+                <defs>
+                  <linearGradient id={`arrow-grad-${i}`} x1="0" x2="1" y1="0" y2="0">
+                    <stop offset="0%"  stopColor="rgba(220,252,231,0)" />
+                    <stop offset="55%" stopColor="rgba(220,252,231,0.95)" />
+                    <stop offset="100%" stopColor="rgba(187,247,208,1)" />
+                  </linearGradient>
+                </defs>
+                <line x1="0" y1="9" x2="82" y2="9" stroke={`url(#arrow-grad-${i})`} strokeWidth="3" strokeLinecap="round" />
+                {/* Arrowhead: filled triangle at the tip. */}
+                <path d="M76 2 L100 9 L76 16 Z" fill="rgb(220,252,231)" />
+              </svg>
             </div>
           );
         });
@@ -1617,11 +1634,16 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
     }
   }, [state.direction]);
 
-  // Pile-pickup animation: when "<name> picked up the pile" appears in the log,
-  // we flash a one-shot overlay of card-backs from the centre pile flying to that
-  // player's tile. We must snapshot the *previous* pile length because by the
-  // time the log line lands, state.pile is already []. Self-clearing after the
-  // animation duration so a second pickup re-fires the overlay.
+  // Pile-pickup animation: a one-shot card-backs-fly-to-tile overlay whenever
+  // a player takes the pile. Trigger condition is robust to all three log
+  // formats:
+  //   "X picked up the pile (N cards). No hand cards to reveal."
+  //   "X picked up N — must reveal a hand card…"
+  //   "X flipped Y — illegal! Picks up N."
+  // …and falls back to "pile went non-empty → empty + a player-named line"
+  // for forward compat. We snapshot the *previous* pile length because by the
+  // time the log line lands, state.pile is already []. Capped at 12 cards so
+  // a 30-card pickup reads as a sweep, not a swarm.
   const [pickupAnim, setPickupAnim] = useState<{ key: number; pickerId: number; count: number } | null>(null);
   const prevPileLenRef = useRef(state.pile.length);
   const pickupKeyRef = useRef(0);
@@ -1631,14 +1653,17 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
     pickupLogLenRef.current = state.log.length;
     const prevPile = prevPileLenRef.current;
     prevPileLenRef.current = state.pile.length;
+    // Only consider a pickup if the pile actually emptied (not still filling).
+    if (prevPile === 0) return;
     for (const line of newLines) {
-      const m = line.match(/^([^\n]+?)\s+picked up the pile/i);
+      // Match any of the pickup phrasings: "picked up", "Picks up". Names can
+      // contain spaces, so we anchor the rest of the phrase, not the name.
+      const m = line.match(/^([^\n]+?)\s+(?:picked up|flipped[^\n]*?Picks up)\b/i);
       if (!m) continue;
       const name = m[1].trim();
       const idx = state.players.findIndex(p => p.name === name);
       if (idx < 0) continue;
       pickupKeyRef.current += 1;
-      // Cap visible cards at 12 — past that they overlap so heavily it's just noise.
       setPickupAnim({ key: pickupKeyRef.current, pickerId: idx, count: Math.min(prevPile || 1, 12) });
       const t = setTimeout(() => setPickupAnim(null), 900);
       return () => clearTimeout(t);
@@ -2797,7 +2822,15 @@ function LocalGame({ humans, ais, aiSpeed, aiDifficulty, onExit }: { humans: num
         break;
       case 'play': body = <PlayScreen state={state} dispatch={dispatch} viewerId={localViewerId} fromDeckIds={fromDeckIds} />; break;
       case 'flipFaceDown': body = <FlipScreen state={state} dispatch={dispatch} viewerId={localViewerId} />; break;
-      case 'reveal': body = <RevealChoiceScreen state={state} dispatch={dispatch} viewerId={localViewerId} />; break;
+      // Keep the table mounted under the reveal modal so the pile-pickup
+      // animation fires the moment the log line lands. The modal sits on top
+      // and absorbs all interaction.
+      case 'reveal': body = (
+        <>
+          <PlayScreen state={state} dispatch={dispatch} viewerId={localViewerId} fromDeckIds={fromDeckIds} />
+          <RevealChoiceScreen state={state} dispatch={dispatch} viewerId={localViewerId} />
+        </>
+      ); break;
       case 'end': body = <EndScreen state={state} onPlayAgain={restart} />; break;
       default: body = null;
     }
@@ -2865,7 +2898,14 @@ function NetworkGame({ onExit, prefilledCode }: { onExit: () => void; prefilledC
       case 'pass':
       case 'play': body = <PlayScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} emotes={conn.lobby?.emotes} onEmote={onEmote} fromDeckIds={fromDeckIds} />; break;
       case 'flipFaceDown': body = <FlipScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} />; break;
-      case 'reveal': body = <RevealChoiceScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} />; break;
+      // Same trick as local mode: keep PlayScreen alive under the reveal modal
+      // so its log-watch effect fires the pile-pickup animation.
+      case 'reveal': body = (
+        <>
+          <PlayScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} emotes={conn.lobby?.emotes} onEmote={onEmote} fromDeckIds={fromDeckIds} />
+          <RevealChoiceScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} />
+        </>
+      ); break;
       case 'end': {
         const isHost = conn.lobby?.myId === conn.lobby?.hostId;
         body = (
