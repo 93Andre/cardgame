@@ -914,31 +914,48 @@ function GameLogOverlay({ log, open, onClose }: { log: string[]; open: boolean; 
 /* ============== Toasts ============== */
 
 interface Toast { id: number; text: string; tone: 'reset' | 'burn' | 'skip' | 'reverse' | 'seven' | 'win' | 'info' }
-const TONE_CLASSES: Record<Toast['tone'], string> = {
-  reset: 'bg-sky-500',
-  burn: 'bg-rose-600',
-  skip: 'bg-amber-500',
-  reverse: 'bg-violet-500',
-  seven: 'bg-pink-500',
-  win: 'bg-emerald-600',
-  info: 'bg-gray-700',
+
+// Tone palette: a small colored dot + a glow that tints the dark glass pill.
+// All toasts share the same dark frosted-glass body so they read as a coherent
+// system instead of a rainbow of garish solid colors.
+const TONE_TOKENS: Record<Toast['tone'], { dot: string; glow: string; ring: string }> = {
+  reset:   { dot: 'bg-sky-400',     glow: 'rgba(56,189,248,0.40)',  ring: 'ring-sky-400/30' },
+  burn:    { dot: 'bg-rose-500',    glow: 'rgba(244,63,94,0.50)',   ring: 'ring-rose-400/40' },
+  skip:    { dot: 'bg-amber-400',   glow: 'rgba(251,191,36,0.45)',  ring: 'ring-amber-400/35' },
+  reverse: { dot: 'bg-fuchsia-400', glow: 'rgba(232,121,249,0.45)', ring: 'ring-fuchsia-400/35' },
+  seven:   { dot: 'bg-pink-400',    glow: 'rgba(244,114,182,0.40)', ring: 'ring-pink-400/30' },
+  win:     { dot: 'bg-emerald-400', glow: 'rgba(52,211,153,0.45)',  ring: 'ring-emerald-400/35' },
+  info:    { dot: 'bg-slate-300',   glow: 'rgba(148,163,184,0.30)', ring: 'ring-slate-400/25' },
 };
 
 function ToastStack({ toasts }: { toasts: Toast[] }) {
   return (
-    <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40 flex flex-col items-center gap-2 pointer-events-none">
+    <div className="fixed top-14 sm:top-16 left-1/2 -translate-x-1/2 z-40 flex flex-col items-center gap-2 pointer-events-none px-4 max-w-full">
       <AnimatePresence>
-        {toasts.map(t => (
-          <motion.div
-            key={t.id}
-            initial={{ opacity: 0, y: -20, scale: 0.9 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -20, scale: 0.9 }}
-            className={`px-4 py-2 rounded-full text-white font-semibold shadow-lg ${TONE_CLASSES[t.tone]}`}
-          >
-            {t.text}
-          </motion.div>
-        ))}
+        {toasts.map(t => {
+          const k = TONE_TOKENS[t.tone];
+          return (
+            <motion.div
+              key={t.id}
+              initial={{ opacity: 0, y: -12, scale: 0.94 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -8, scale: 0.94 }}
+              transition={{ type: 'spring', stiffness: 320, damping: 28 }}
+              className={`flex items-center gap-2.5 pl-3 pr-4 py-1.5 rounded-full bg-slate-900/85 backdrop-blur-md ring-1 ${k.ring} text-white text-sm font-semibold tracking-wide shadow-[0_8px_24px_rgba(0,0,0,0.35)]`}
+              style={{
+                boxShadow: `0 6px 18px ${k.glow}, 0 0 0 1px rgba(255,255,255,0.04) inset`,
+              }}
+            >
+              <span className={`relative inline-block w-2 h-2 rounded-full ${k.dot}`}>
+                <span
+                  className={`absolute inset-0 rounded-full ${k.dot} animate-ping opacity-60`}
+                  aria-hidden
+                />
+              </span>
+              <span className="whitespace-nowrap">{t.text}</span>
+            </motion.div>
+          );
+        })}
       </AnimatePresence>
     </div>
   );
