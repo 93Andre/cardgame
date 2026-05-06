@@ -320,6 +320,7 @@ interface CardFaceProps {
   hidden?: boolean;
   selected?: boolean;
   onClick?: () => void;
+  onDoubleClick?: () => void;            // double-tap shortcut — used to fast-play a single card
   dim?: boolean;
   jokerEffRank?: Rank | null;
   magnifyOnHover?: boolean;
@@ -327,7 +328,7 @@ interface CardFaceProps {
   chainable?: boolean;                   // chain (just-played player rank match) — emerald glow
 }
 
-function CardFace({ card, size, small, hidden, selected, onClick, dim, jokerEffRank, magnifyOnHover, cuttable, chainable }: CardFaceProps) {
+function CardFace({ card, size, small, hidden, selected, onClick, onDoubleClick, dim, jokerEffRank, magnifyOnHover, cuttable, chainable }: CardFaceProps) {
   const resolvedSize: 'tiny' | 'small' | 'normal' = size ?? (small ? 'small' : 'normal');
   const w =
     resolvedSize === 'tiny'  ? 'w-7 h-10 text-[8px]' :
@@ -347,6 +348,7 @@ function CardFace({ card, size, small, hidden, selected, onClick, dim, jokerEffR
     return (
       <div
         onClick={onClick}
+        onDoubleClick={onDoubleClick}
         className={`${base} bg-indigo-600 border-indigo-800 text-white ${onClick ? 'cursor-pointer' : ''} ${selected ? '-translate-y-2 ring-2 ring-amber-400' : ''}`}
       >
         <div className="font-black tracking-widest opacity-80">PH</div>
@@ -360,6 +362,7 @@ function CardFace({ card, size, small, hidden, selected, onClick, dim, jokerEffR
   return (
     <div
       onClick={onClick}
+      onDoubleClick={onDoubleClick}
       className={`${base} ${bg} ${colorCls} border-gray-300 ${onClick ? 'cursor-pointer hover:shadow-md' : ''} ${selected ? '-translate-y-3 ring-2 ring-amber-500' : ''} ${dim ? 'opacity-50' : ''}`}
     >
       <div className="absolute top-0.5 left-0.5 leading-none font-bold">{isJoker ? 'J' : card.rank}</div>
@@ -2925,7 +2928,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
                   </>
                 )}
                 {!isSpectator && !isMyTurn && <>Waiting for {state.players[state.current].name}…</>}
-                {isMyTurn && src === 'hand' && <>Your hand: <span className="text-white/60">(1-9 to select, Enter play, P pickup)</span></>}
+                {isMyTurn && src === 'hand' && <>Your hand: <span className="text-white/60">(double-tap to play · 1-9 select · Enter play · P pickup)</span></>}
                 {isMyTurn && src === 'faceUp' && <>Hand & deck empty — playing from face-up.</>}
                 {isMyTurn && src === 'faceDown' && <>Pick a face-down card to flip.</>}
               </div>
@@ -2969,6 +2972,15 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
                       : isCutMatch
                         ? () => dispatch({ type: 'CUT', player: viewer, ids: myCutMatches.map(m => m.id) })
                         : undefined;
+                    // Double-tap shortcut — play this card immediately as a
+                    // single-card play. Only fires when (a) it's your turn,
+                    // (b) the card alone is a legal play, and (c) we're
+                    // playing from hand or face-up (face-down has its own
+                    // flow). Multi-card plays still need select + Play.
+                    const canFastPlay = isMyTurn && wouldBeOk && (src === 'hand' || src === 'faceUp');
+                    const onDoubleClick = canFastPlay
+                      ? () => dispatch({ type: 'PLAY_CARDS', ids: [c.id] })
+                      : undefined;
                     return (
                       <AnimatedCard
                         key={c.id} layoutId={c.id} card={c}
@@ -2978,6 +2990,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
                         cuttable={isCutMatch && !isChainMatch}
                         chainable={isChainMatch}
                         onClick={onClick}
+                        onDoubleClick={onDoubleClick}
                       />
                     );
                   })}
