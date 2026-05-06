@@ -395,7 +395,7 @@ function PlayerArea({ player, isCurrent, isViewer, compact, faceDownClickable, o
   // Compact mode: tighter padding, smaller text, face-up + face-down rendered side-by-side
   // in a single row so the tile stays short enough to fit around the table on mobile.
   return (
-    <div className={`relative ${compact ? 'p-1.5' : 'p-2 sm:p-3'} rounded-lg border-2 ${isCurrent ? `${c.border} ${c.bg} ring-2 ${c.ring}` : 'border-gray-300 bg-white/60'} ${recentlyActed ? 'player-acted-pulse' : ''} flex flex-col ${compact ? 'gap-1' : 'gap-2'} min-w-0`}>
+    <div className={`relative ${compact ? 'p-1.5' : 'p-2 sm:p-3'} rounded-lg border-2 ${isCurrent ? `${c.border} ${c.bg} ring-2 ${c.ring}` : 'border-gray-300 bg-white/85'} ${recentlyActed ? 'player-acted-pulse' : ''} flex flex-col ${compact ? 'gap-1' : 'gap-2'} min-w-0`}>
       {/* Turn-speed indicator: appears above the current player's tile after 15s of thinking,
           fills toward the 30s server-side auto-pickup cutoff. */}
       {isCurrent && typeof turnElapsedMs === 'number' && turnElapsedMs > 15000 && (
@@ -787,7 +787,7 @@ function CenterPiles({ deckCount, pile, burnedCount, lastBurnSize }: {
     <div className="relative flex items-end gap-5 sm:gap-7 justify-center">
       <div className="flex flex-col items-center gap-1" ref={deckRef}>
         <CardStack count={deckCount} />
-        <span className="text-xs text-gray-600">deck: {deckCount}</span>
+        <span className="text-xs font-semibold text-white/90 tabular-nums drop-shadow-[0_1px_2px_rgba(0,0,0,0.7)]">deck: {deckCount}</span>
       </div>
       <div className="flex flex-col items-center gap-1 relative">
         <CardStack
@@ -802,7 +802,7 @@ function CenterPiles({ deckCount, pile, burnedCount, lastBurnSize }: {
           }
           emptyLabel="empty"
         />
-        <span className="text-xs text-gray-600">pile: {pile.length}</span>
+        <span className="text-xs font-semibold text-white/90 tabular-nums drop-shadow-[0_1px_2px_rgba(0,0,0,0.7)]">pile: {pile.length}</span>
 
         {/* Cards flying from pile → burn pile (one per burn event) */}
         {burnFlight && Array.from({ length: burnFlight.count }).map((_, i) => (
@@ -847,7 +847,7 @@ function CenterPiles({ deckCount, pile, burnedCount, lastBurnSize }: {
             />
           )}
         </AnimatePresence>
-        <span className="text-xs text-gray-600">burned: {burnedCount}</span>
+        <span className="text-xs font-semibold text-white/90 tabular-nums drop-shadow-[0_1px_2px_rgba(0,0,0,0.7)]">burned: {burnedCount}</span>
       </div>
     </div>
   );
