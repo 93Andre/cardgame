@@ -329,6 +329,19 @@ interface CardFaceProps {
   chainable?: boolean;                   // chain (just-played player rank match) — emerald glow
 }
 
+// Power cards carry game-changing rules (burn / reset / skip / reverse / lock
+// / wild). A subtle bottom accent stripe + corner ⚡ pip lets players scan
+// their hand and read "this card matters" without having to remember every
+// rule. Tinted to match the toast tone for that effect.
+const POWER_CARD_ACCENTS: Partial<Record<Rank, { bar: string; tip: string }>> = {
+  '10': { bar: 'bg-rose-500',    tip: 'Burns pile' },
+  '2':  { bar: 'bg-sky-500',     tip: 'Resets pile' },
+  '8':  { bar: 'bg-amber-500',   tip: 'Skips next' },
+  'K':  { bar: 'bg-violet-500',  tip: 'Reverses' },
+  '7':  { bar: 'bg-pink-500',    tip: '7-or-lower lock' },
+  'JK': { bar: 'bg-fuchsia-500', tip: 'Wild' },
+};
+
 function CardFace({ card, size, small, hidden, selected, onClick, onDoubleClick, dim, jokerEffRank, magnifyOnHover, cuttable, chainable }: CardFaceProps) {
   const resolvedSize: 'tiny' | 'small' | 'normal' = size ?? (small ? 'small' : 'normal');
   const w =
@@ -360,17 +373,33 @@ function CardFace({ card, size, small, hidden, selected, onClick, onDoubleClick,
   const red = RED_SUITS.includes(card.suit);
   const colorCls = isJoker ? 'text-purple-700' : red ? 'text-red-600' : 'text-gray-900';
   const bg = isJoker ? 'bg-amber-50' : 'bg-white';
+  const accent = POWER_CARD_ACCENTS[card.rank];
+  // Bar is thinner on tiny/small cards so it doesn't eat the rank glyph.
+  const barH = resolvedSize === 'tiny' ? 'h-[2px]' : resolvedSize === 'small' ? 'h-[3px]' : 'h-1';
   return (
     <div
       onClick={onClick}
       onDoubleClick={onDoubleClick}
-      className={`${base} ${bg} ${colorCls} border-gray-300 ${onClick ? 'cursor-pointer hover:shadow-md' : ''} ${selected ? '-translate-y-3 ring-2 ring-amber-500' : ''} ${dim ? 'opacity-50' : ''}`}
+      className={`${base} ${bg} ${colorCls} border-gray-300 ${onClick ? 'cursor-pointer hover:shadow-md' : ''} ${selected ? '-translate-y-3 ring-2 ring-amber-500' : ''} ${dim ? 'opacity-50' : ''} overflow-hidden`}
+      title={accent?.tip}
     >
       <div className="absolute top-0.5 left-0.5 leading-none font-bold">{isJoker ? 'J' : card.rank}</div>
       <div className={resolvedSize === 'tiny' ? 'text-sm' : resolvedSize === 'small' ? 'text-lg' : 'text-2xl'}>{isJoker ? '★' : card.suit}</div>
       <div className="absolute bottom-0.5 right-0.5 leading-none font-bold rotate-180">{isJoker ? 'J' : card.rank}</div>
       {isJoker && jokerEffRank && jokerEffRank !== 'JK' && (
         <div className="absolute -top-2 -right-2 px-1 py-0.5 bg-purple-700 text-white text-[10px] rounded-full font-bold">={jokerEffRank}</div>
+      )}
+      {accent && (
+        <>
+          {/* Bottom accent bar — tinted by power-effect, sits flush with the
+              card's bottom edge inside the rounded clip. */}
+          <div className={`absolute bottom-0 inset-x-0 ${barH} ${accent.bar}`} aria-hidden />
+          {/* Tiny ⚡ pip in the upper-right so the power status is also
+              visible at a glance even when the card is partly occluded. */}
+          {resolvedSize !== 'tiny' && (
+            <div className="absolute top-0.5 right-0.5 text-[10px] leading-none opacity-70" aria-hidden>⚡</div>
+          )}
+        </>
       )}
     </div>
   );
@@ -461,9 +490,9 @@ function PlayerArea({ player, isCurrent, isViewer, isSpectatorFocus, onSpectator
         isSpectatorFocus
           ? 'border-violet-400 bg-violet-50 ring-2 ring-violet-400 shadow-[0_0_18px_rgba(167,139,250,0.45)]'
           : isCurrent
-            ? `${c.border} ${c.bg} ring-2 ${c.ring}`
+            ? `${c.border} ${c.bg} ring-2 ${c.ring} active-player-glow`
             : 'border-gray-300 bg-white/85'
-      } ${recentlyActed ? 'player-acted-pulse' : ''} ${onSpectatorFocus ? 'cursor-pointer hover:ring-2 hover:ring-violet-300 transition-shadow' : ''} flex flex-col ${compact ? 'gap-1' : 'gap-2'} min-w-0`}>
+      } ${recentlyActed ? 'player-acted-pulse' : ''} ${onSpectatorFocus ? 'cursor-pointer hover:ring-2 hover:ring-violet-300 transition-shadow' : ''} flex flex-col ${compact ? 'gap-1' : 'gap-2'} min-w-0 transition-transform duration-300 ${isCurrent && !isSpectatorFocus ? 'scale-[1.04]' : ''}`}>
       {/* Turn-speed indicator: appears above the current player's tile after 15s of thinking,
           fills toward the 30s server-side auto-pickup cutoff. */}
       {isCurrent && typeof turnElapsedMs === 'number' && turnElapsedMs > 15000 && (
@@ -480,7 +509,11 @@ function PlayerArea({ player, isCurrent, isViewer, isSpectatorFocus, onSpectator
       )}
       <div className={`flex items-center justify-between ${compact ? 'gap-1' : 'gap-2'}`}>
         <span className={`font-semibold flex items-center gap-1.5 truncate ${compact ? 'text-[11px]' : ''}`}>
-          <Avatar avatar={avatar} name={player.name} size="sm" />
+          {/* Active-player avatar gets a small scale-up so their seat reads
+              like a spotlit stage rather than a static tile. */}
+          <span className={`inline-flex transition-transform duration-300 ${isCurrent ? 'scale-110' : ''}`}>
+            <Avatar avatar={avatar} name={player.name} size="sm" />
+          </span>
           <span className="truncate">{player.name}</span>
           {!compact && player.isAi && <span className="text-[10px] px-1 py-0.5 bg-gray-200 rounded">AI</span>}
           {!compact && isViewer && <span className="text-[10px] text-emerald-700">(you)</span>}
@@ -565,13 +598,14 @@ function PlayerArea({ player, isCurrent, isViewer, isSpectatorFocus, onSpectator
 
 // Arranges player tiles around a central pile area, with the viewer always at the bottom
 // and other players spread clockwise (or counter-clockwise) by turn order.
-function CircularTable({ players, current, viewer, direction, directionFlashKey, pickupAnim, renderPlayer, centerContent }: {
+function CircularTable({ players, current, viewer, direction, directionFlashKey, pickupAnim, playAnim, renderPlayer, centerContent }: {
   players: Player[];
   current: number;
   viewer: number;
   direction: 1 | -1;
   directionFlashKey?: number;        // bumps when direction flips → triggers chevron flash
   pickupAnim?: { key: number; pickerId: number; count: number } | null;
+  playAnim?: { key: number; actorId: number; cards: Card[] } | null;
   renderPlayer: (p: Player, isNext: boolean, compact: boolean) => React.ReactNode;
   centerContent: React.ReactNode;
 }) {
@@ -720,6 +754,43 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
       <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
         {centerContent}
       </div>
+
+      {/* Opponent / AI play animation — fly the just-played card(s) from
+          the actor's tile to the pile centre. The static pile already shows
+          them at the destination after the state update; the moving overlay
+          gives the eye something to follow so plays don't appear to teleport.
+          Reuses the same slot math as player tiles for the source position. */}
+      <AnimatePresence>
+        {playAnim && (() => {
+          const slot = (playAnim.actorId - safeViewer + n) % n;
+          const baseAngle = 90 + (slot / n) * 360;
+          const angle = baseAngle * Math.PI / 180;
+          const sourceX = 50 + Math.cos(angle) * rx * 100;
+          const sourceY = 50 + Math.sin(angle) * ry * 100;
+          return playAnim.cards.map((c, i) => (
+            <motion.div
+              key={`play-${playAnim.key}-${c.id}`}
+              initial={{
+                left: `${sourceX}%`, top: `${sourceY}%`,
+                x: '-50%', y: '-50%',
+                scale: 0.6, opacity: 0, rotate: (i - playAnim.cards.length / 2) * 5,
+              }}
+              animate={{
+                left: '50%', top: '50%',
+                x: '-50%', y: '-50%',
+                scale: 1, opacity: 1, rotate: 0,
+              }}
+              exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.12 } }}
+              transition={{ duration: 0.42, delay: i * 0.06, ease: [0.4, 0.0, 0.2, 1] }}
+              className="absolute pointer-events-none"
+              style={{ zIndex: 35 }}
+              aria-hidden
+            >
+              <CardFace card={c} />
+            </motion.div>
+          ));
+        })()}
+      </AnimatePresence>
 
       {/* Pile-pickup animation: card-backs fly from the centre pile to the
           picker's tile. Reuses the same slot math as the player tiles, so the
@@ -3250,6 +3321,41 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
     }
   }, [state.log, state.pile.length, state.players]);
 
+  // AI / opponent play animation — when somebody other than the viewer adds
+  // cards to the pile, fly a copy of those cards from their tile to the pile
+  // centre so the eye follows the play. The viewer's own plays already
+  // animate via framer-motion's layoutId on hand cards, so we skip them.
+  const [playAnim, setPlayAnim] = useState<{ key: number; actorId: number; cards: Card[] } | null>(null);
+  const playPrevPileRef = useRef(state.pile.length);
+  const playLogLenRef = useRef(state.log.length);
+  const playKeyRef = useRef(0);
+
+  useEffect(() => {
+    const prevPile = playPrevPileRef.current;
+    const newPile = state.pile.length;
+    const prevLog = playLogLenRef.current;
+    playPrevPileRef.current = newPile;
+    playLogLenRef.current = state.log.length;
+    if (newPile <= prevPile) return;                     // pile shrank or stayed (pickup/burn)
+    const fresh = state.log.slice(prevLog);
+    let actorId = -1;
+    // Walk newest-first so multi-line play chains (rare) attribute correctly.
+    for (let i = fresh.length - 1; i >= 0; i--) {
+      const m = fresh[i].match(/^([^\n]+?)\s+(played|chained|CUT with)\b/i);
+      if (!m) continue;
+      const idx = state.players.findIndex(p => p.name === m[1].trim());
+      if (idx >= 0) { actorId = idx; break; }
+    }
+    if (actorId < 0) return;
+    if (!isSpectator && actorId === viewer) return;       // viewer's own plays animate via layoutId
+    const newCards = state.pile.slice(prevPile).map(e => e.card);
+    if (newCards.length === 0) return;
+    playKeyRef.current += 1;
+    setPlayAnim({ key: playKeyRef.current, actorId, cards: newCards });
+    const t = setTimeout(() => setPlayAnim(null), 700);
+    return () => clearTimeout(t);
+  }, [state.pile, state.log, state.players, viewer, isSpectator]);
+
   // Out-of-turn matches: includes both Ultimate cuts (rank+suit by anyone) and
   // chains (rank-only, available to the player who just played, in any mode).
   // cutMatches handles both flavors internally.
@@ -3405,6 +3511,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
                 direction={state.direction}
                 directionFlashKey={directionFlashKey}
                 pickupAnim={pickupAnim}
+                playAnim={playAnim}
                 renderPlayer={renderPlayerTile}
                 centerContent={center}
               />
@@ -4832,6 +4939,14 @@ function LocalGame({ humans, ais, aiSpeed, aiDifficulty, onExit, auth }: { human
     }
   }, [humanCutterPending, state.current, state.players]);
 
+  // Latest-state ref so timers compute their action against current state at
+  // fire-time, not against the (possibly stale) state captured when the
+  // effect scheduled. Without this, an interleaved cut or rematch can leave
+  // the AI dispatching an invalid action that the reducer silently no-ops,
+  // freezing the turn.
+  const stateRef = useRef(state);
+  useEffect(() => { stateRef.current = state; }, [state]);
+
   // AI auto-step.
   useEffect(() => {
     if (aiTimer.current) { clearTimeout(aiTimer.current); aiTimer.current = null; }
@@ -4854,11 +4969,37 @@ function LocalGame({ humans, ais, aiSpeed, aiDifficulty, onExit, auth }: { human
     const humanCutDelay = humanCutterPending !== undefined && aiId === state.current ? 1800 : 0;
     const baseDelay = (isCut ? 350 : 700) * aiSpeed;
     aiTimer.current = window.setTimeout(() => {
-      const action = aiPickAction(state, aiId!);
+      // Recompute against the latest state, not the closure-captured one.
+      const fresh = stateRef.current;
+      const action = aiPickAction(fresh, aiId!);
       if (action) dispatch(action);
     }, Math.max(baseDelay, revealDelay, humanCutDelay));
     return () => { if (aiTimer.current) clearTimeout(aiTimer.current); };
   }, [state, aiCutterPending, humanCutterPending, aiSpeed]);
+
+  // Local human turn watchdog — mirrors the server's TURN_TIMEOUT_MS. If the
+  // current player is human and they don't act within 30s, auto-pickup the
+  // pile (or auto-resolve a face-down flip). Reveal phase has its own timer
+  // baked into RevealChoiceScreen so we skip it here.
+  const humanTurnTimer = useRef<number | null>(null);
+  useEffect(() => {
+    if (humanTurnTimer.current) { clearTimeout(humanTurnTimer.current); humanTurnTimer.current = null; }
+    const phase = state.phase;
+    if (phase !== 'play' && phase !== 'flipFaceDown') return;
+    const cur = state.players[state.current];
+    if (!cur || cur.isAi) return;
+    humanTurnTimer.current = window.setTimeout(() => {
+      const fresh = stateRef.current;
+      const p = fresh.phase;
+      if (p !== 'play' && p !== 'flipFaceDown') return;
+      const id = fresh.current;
+      const player = fresh.players[id];
+      if (!player || player.isAi) return;
+      const action: Action = p === 'play' ? { type: 'PICKUP_PILE' } : { type: 'RESOLVE_FLIP' };
+      dispatch(action);
+    }, 30_000);
+    return () => { if (humanTurnTimer.current) { clearTimeout(humanTurnTimer.current); humanTurnTimer.current = null; } };
+  }, [state.phase, state.current, state.players]);
 
   // Skip the pass screen whenever the device doesn't actually need to change hands:
   //  - next player is AI, OR
