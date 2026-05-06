@@ -18,6 +18,16 @@
 }
 .player-acted-pulse { animation: player-acted-pulse 0.6s ease-out 1; }
 
+/* Soft persistent glow on the current player's tile — looped 2.4s breath
+ * so it reads as "this is the active seat" without being distracting.
+ * Color is intentionally amber-ish to feel like a spotlight; pairs with
+ * the per-player ring colour underneath. */
+@keyframes active-player-glow {
+  0%, 100% { box-shadow: 0 0 0 0   rgba(251, 191, 36, 0.25); }
+  50%      { box-shadow: 0 0 0 10px rgba(251, 191, 36, 0);    }
+}
+.active-player-glow { animation: active-player-glow 2.4s ease-in-out infinite; }
+
 /* Soft expanding ring on the chat launcher when there are unread messages.
  * Repeats indefinitely until the panel is opened. Emerald to match the
  * "new" / send-button colour. Subtle — not jarring. */
