@@ -1871,9 +1871,11 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
             )}
           </div>
 
-          {/* Action bar — sticky at the bottom. Hidden during the face-down phase so it doesn't
-              cover the blind-flip cards (both buttons would be disabled anyway). */}
-          {(isMyTurn || canCut) && src !== 'faceDown' && (
+          {/* Action bar — sticky at the bottom and ALWAYS rendered (when not a
+              spectator and not in the face-down phase) so the layout never
+              shifts when turns change. Buttons gray out when they aren't
+              actionable instead of disappearing. */}
+          {!isSpectator && src !== 'faceDown' && (
             <div className="sticky bottom-0 left-0 right-0 z-20 mt-2 pb-3 pt-2 px-3 -mx-3 sm:-mx-4 flex items-center gap-2 flex-wrap justify-center bg-gradient-to-t from-emerald-950/80 via-emerald-900/40 to-transparent">
               {isMyTurn && !anyLegal && src && (
                 <span className="text-xs text-rose-200 italic mr-1">No legal play — pick up.</span>
