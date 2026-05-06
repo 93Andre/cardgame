@@ -565,64 +565,63 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
       className={`relative w-full mx-auto ${layout === 'desktop' ? 'flex-1' : ''}`}
       style={{ aspectRatio, maxWidth: 1100, minHeight, maxHeight }}
     >
-      <div className="absolute left-1/2 top-1 -translate-x-1/2 text-xl text-gray-500 select-none pointer-events-none">
-        {direction === 1 ? '↻' : '↺'}
-      </div>
-
-      {/* Direction-of-play arrows: four long, clean SVG arrows placed along
-          the diagonals of the ellipse (between player tiles, where the
-          perimeter is mostly empty), each rotated along the tangent so they
-          all sweep in the current play direction. A staggered chase wave
-          highlights them in sequence so the direction is obvious even on a
-          still screenshot. Real DOM elements (not the parent stretched SVG)
-          so the arrow shape stays proportional regardless of table aspect
-          ratio. `directionFlashKey` re-keys the group so a King reversal
-          replays the flash animation. */}
-      {(() => {
-        const angles = [45, 135, 225, 315];   // diagonal sweet spots
-        const PERIOD = 2.0;
-        // Arrow length scales with layout — desktop has more perimeter to fill.
-        const lenPx = layout === 'desktop' ? 110 : layout === 'landscape' ? 90 : 72;
-        return angles.map((theta, i) => {
-          const xPct = 50 + Math.sin(theta * Math.PI / 180) * rx * 100;
-          const yPct = 50 - Math.cos(theta * Math.PI / 180) * ry * 100;
-          // Tangent direction at this θ — the chevron points the way play
-          // moves. Subtract 90 because the SVG arrow is drawn pointing right
-          // (east, 0°) and rotation 0 should align with theta=90 tangent.
-          const baseRot = theta;
-          const rot = direction === 1 ? baseRot : baseRot + 180;
-          const phaseDelay = -(i / angles.length) * PERIOD;
-          const flipDelay = i * 0.04;
-          return (
-            <div
-              key={`arrow-${i}-${directionFlashKey ?? 0}`}
-              className="absolute select-none pointer-events-none table-flow-chase table-flow-flip drop-shadow-[0_2px_4px_rgba(0,0,0,0.5)]"
-              style={{
-                left: `${xPct}%`,
-                top: `${yPct}%`,
-                transform: `translate(-50%, -50%) rotate(${rot}deg)`,
-                animationDelay: `${phaseDelay}s, ${flipDelay}s`,
-              }}
-              aria-hidden
-            >
-              <svg width={lenPx} height={lenPx * 0.18} viewBox="0 0 100 18" className="overflow-visible">
-                {/* Shaft: thin, with a soft fade at the tail so it reads as a
-                    streak rather than a bar. */}
-                <defs>
-                  <linearGradient id={`arrow-grad-${i}`} x1="0" x2="1" y1="0" y2="0">
-                    <stop offset="0%"  stopColor="rgba(220,252,231,0)" />
-                    <stop offset="55%" stopColor="rgba(220,252,231,0.95)" />
-                    <stop offset="100%" stopColor="rgba(187,247,208,1)" />
-                  </linearGradient>
-                </defs>
-                <line x1="0" y1="9" x2="82" y2="9" stroke={`url(#arrow-grad-${i})`} strokeWidth="3" strokeLinecap="round" />
-                {/* Arrowhead: filled triangle at the tip. */}
-                <path d="M76 2 L100 9 L76 16 Z" fill="rgb(220,252,231)" />
-              </svg>
-            </div>
-          );
-        });
-      })()}
+      {/* Direction-of-play track: a glowing neon comet orbiting the ellipse.
+          Three layered SVG strokes:
+            • base ring — faint full outline so the path is always readable
+            • glow — broad, blurred dash trailing slightly behind the head
+            • core — short bright dash that *is* the comet head
+          stroke-dashoffset animates around the path, in path direction (CW)
+          for direction=1, reversed via the `flow-comet-ccw` keyframe for
+          direction=-1. pathLength="100" normalises the dash math regardless
+          of the actual perimeter — the glow trails the core by 8 path units
+          via animation-delay so a clean streak forms behind the head.
+          The whole group is keyed on `direction` + `directionFlashKey` so a
+          King reversal cleanly remounts and restarts the animation in the
+          new direction (no mid-cycle jump). */}
+      <svg
+        key={`flow-comet-${direction}-${directionFlashKey ?? 0}`}
+        viewBox="0 0 100 100" preserveAspectRatio="none"
+        className="absolute inset-0 w-full h-full pointer-events-none overflow-visible"
+      >
+        <defs>
+          <filter id="flow-comet-glow" x="-30%" y="-30%" width="160%" height="160%">
+            <feGaussianBlur stdDeviation="1.4" />
+          </filter>
+        </defs>
+        {/* Faint full-perimeter track. */}
+        <ellipse
+          cx="50" cy="50" rx={rx * 100} ry={ry * 100}
+          fill="none" stroke="rgba(255,255,255,0.10)" strokeWidth="1.2"
+          vectorEffect="non-scaling-stroke"
+        />
+        {/* Glow trail — broader, blurred, lags behind the core. */}
+        <ellipse
+          cx="50" cy="50" rx={rx * 100} ry={ry * 100}
+          pathLength={100}
+          fill="none"
+          stroke="rgba(167,243,208,0.55)" strokeWidth="7"
+          strokeDasharray="32 68" strokeLinecap="round"
+          vectorEffect="non-scaling-stroke"
+          filter="url(#flow-comet-glow)"
+          style={{
+            animation: `flow-comet-${direction === 1 ? 'cw' : 'ccw'} 3.2s linear infinite`,
+            animationDelay: '-0.18s',     // ~5.6% of period — lags slightly behind the core
+          }}
+        />
+        {/* Bright core head. */}
+        <ellipse
+          cx="50" cy="50" rx={rx * 100} ry={ry * 100}
+          pathLength={100}
+          fill="none"
+          stroke="rgb(220,252,231)" strokeWidth="2.2"
+          strokeDasharray="10 90" strokeLinecap="round"
+          vectorEffect="non-scaling-stroke"
+          style={{
+            animation: `flow-comet-${direction === 1 ? 'cw' : 'ccw'} 3.2s linear infinite`,
+            filter: 'drop-shadow(0 0 4px rgba(220,252,231,0.9))',
+          }}
+        />
+      </svg>
 
       {players.map(p => {
         // Player slots are FIXED relative to the viewer — direction reversal only flips the

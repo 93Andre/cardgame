@@ -2,21 +2,12 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Chasing wave for the chevron ring. Each chevron's animation-delay is offset
- * by its position around the ellipse so the brightness peak traces a lap per
- * cycle — making the direction of play unmistakable on a still screenshot. */
-@keyframes table-flow-chase {
-  0%, 100% { opacity: 0.30; }
-  50%      { opacity: 0.95; }
-}
-.table-flow-chase { animation: table-flow-chase 2.0s ease-in-out infinite; }
-
-/* King reversal: brief whoosh as the chevrons flip direction. */
-@keyframes table-flow-flip {
-  0%   { filter: brightness(1.6) drop-shadow(0 0 8px #fef08a); }
-  100% { filter: none; }
-}
-.table-flow-flip { animation: table-flow-flip 0.9s ease-out 1; }
+/* Comet orbiting the table ellipse to indicate direction of play.
+ * pathLength="100" is set on each ellipse so dashoffset moves in % of
+ * perimeter regardless of the actual perimeter length. CW = SVG path
+ * default direction, so dashoffset goes negative; CCW reverses. */
+@keyframes flow-comet-cw  { to { stroke-dashoffset: -100; } }
+@keyframes flow-comet-ccw { to { stroke-dashoffset:  100; } }
 
 /* Last-action pulse: a quick warm flash on the tile of whoever just played
  * so the eye can immediately find them across the table. ~600ms total. */
