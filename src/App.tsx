@@ -561,16 +561,17 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
   const maxHeight =
     layout === 'desktop' ? 'min(72vh, 720px)' :
                            undefined;
-  // Desktop spreads tiles further apart for 4+ players so the left/right
-  // pairs (which would otherwise stack with only ~30px between them on a
-  // 720px-tall table) get proper breathing room. Mobile/landscape are
-  // untouched — they already pack tightly by necessity.
+  // Desktop spreads horizontally (rx) generously for 4+ players where space
+  // allows; ry is capped at ~0.36 so the slots that land at the top and
+  // bottom of the ellipse (north/south) keep their full ~200px tiles inside
+  // the table bounds. Going past 0.36 clips the top of the opposite player
+  // and the bottom of the viewer's hand area.
   const rx =
     layout === 'desktop'  ? (n <= 3 ? 0.42 : n <= 4 ? 0.46 : 0.48) :
     layout === 'landscape' ? (n <= 3 ? 0.42 : 0.45) :
     n <= 3 ? 0.34 : 0.40;
   const ry =
-    layout === 'desktop'   ? (n <= 3 ? 0.34 : n <= 4 ? 0.42 : 0.46) :
+    layout === 'desktop'   ? (n <= 3 ? 0.34 : 0.36) :
     layout === 'landscape' ? (n <= 3 ? 0.34 : 0.38) :
                              (n <= 3 ? 0.40 : 0.42);
 
