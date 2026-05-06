@@ -245,16 +245,19 @@ interface CardFaceProps {
   dim?: boolean;
   jokerEffRank?: Rank | null;
   magnifyOnHover?: boolean;
+  cuttable?: boolean;                    // ultimate-mode: highlight as a one-click cut
 }
 
-function CardFace({ card, size, small, hidden, selected, onClick, dim, jokerEffRank, magnifyOnHover }: CardFaceProps) {
+function CardFace({ card, size, small, hidden, selected, onClick, dim, jokerEffRank, magnifyOnHover, cuttable }: CardFaceProps) {
   const resolvedSize: 'tiny' | 'small' | 'normal' = size ?? (small ? 'small' : 'normal');
   const w =
     resolvedSize === 'tiny'  ? 'w-7 h-10 text-[8px]' :
     resolvedSize === 'small' ? 'w-9 h-12 text-[10px] sm:w-10 sm:h-14 sm:text-xs' :
                                'w-14 h-20 text-sm sm:w-16 sm:h-24 sm:text-base';
   const hoverCls = magnifyOnHover ? 'hover:scale-[2] hover:z-30 hover:shadow-2xl' : '';
-  const base = `relative ${w} rounded-md border shadow-sm flex flex-col items-center justify-center select-none transition-all duration-150 ${hoverCls}`;
+  // One-click cut affordance: pulsing fuchsia glow + ring.
+  const cutCls = cuttable ? 'ring-2 ring-fuchsia-400 shadow-[0_0_16px_rgba(232,121,249,0.85)] animate-pulse' : '';
+  const base = `relative ${w} rounded-md border shadow-sm flex flex-col items-center justify-center select-none transition-all duration-150 ${hoverCls} ${cutCls}`;
   if (hidden || !card) {
     return (
       <div
@@ -1567,13 +1570,21 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
                 <LayoutGroup>
                   {displayCards.map(c => {
                     const wouldBeOk = isMyTurn ? canPlayCards([c], state.pile, state.sevenRestriction) : true;
+                    const isCutMatch = canCut && myCutMatches.some(m => m.id === c.id);
+                    // One-click cut: clicking a glowing card on someone else's turn fires CUT immediately.
+                    const onClick = isMyTurn
+                      ? () => dispatch({ type: 'TOGGLE_SELECT', id: c.id })
+                      : isCutMatch
+                        ? () => dispatch({ type: 'CUT', player: viewer, ids: myCutMatches.map(m => m.id) })
+                        : undefined;
                     return (
                       <AnimatedCard
                         key={c.id} layoutId={c.id} card={c}
                         fromDeck={fromDeckIds?.has(c.id)}
                         selected={state.selected.includes(c.id)}
                         dim={isMyTurn && !wouldBeOk && state.selected.length === 0}
-                        onClick={isMyTurn ? () => dispatch({ type: 'TOGGLE_SELECT', id: c.id }) : undefined}
+                        cuttable={isCutMatch}
+                        onClick={onClick}
                       />
                     );
                   })}
