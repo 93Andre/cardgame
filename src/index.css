@@ -10,6 +10,14 @@
 .table-flow-cw  { animation: table-flow-cw  2.4s linear infinite; }
 .table-flow-ccw { animation: table-flow-ccw 2.4s linear infinite; }
 
+/* Soft "chasing" pulse for the directional chevrons placed around the table.
+ * Animates opacity only so the per-chevron rotate transform is preserved. */
+@keyframes table-flow-pulse {
+  0%, 100% { opacity: 0.18; }
+  50%      { opacity: 0.55; }
+}
+.table-flow-pulse { animation: table-flow-pulse 2.4s ease-in-out infinite; }
+
 html, body, #root {
   height: 100%;
   margin: 0;

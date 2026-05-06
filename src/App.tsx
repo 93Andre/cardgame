@@ -542,6 +542,32 @@ function CircularTable({ players, current, viewer, direction, renderPlayer, cent
         {direction === 1 ? '↻' : '↺'}
       </div>
 
+      {/* Subtle directional chevrons at cardinal points around the ellipse,
+          pointing along the current play direction so the flow of the game is
+          unmistakable at a glance. They use real DOM elements (not SVG) so the
+          chevron shape doesn't distort with the table's aspect ratio. */}
+      {[0, 1, 2, 3].map(i => {
+        const theta = i * 90;                                          // 0=N, 90=E, 180=S, 270=W
+        const xPct = 50 + Math.sin(theta * Math.PI / 180) * rx * 100;
+        const yPct = 50 - Math.cos(theta * Math.PI / 180) * ry * 100;
+        const rot = direction === 1 ? theta : theta + 180;             // tangent direction of motion
+        return (
+          <div
+            key={`flow-${i}`}
+            className="absolute text-emerald-300/35 text-2xl select-none pointer-events-none table-flow-pulse"
+            style={{
+              left: `${xPct}%`,
+              top: `${yPct}%`,
+              transform: `translate(-50%, -50%) rotate(${rot}deg)`,
+              animationDelay: `${i * 0.6}s`,
+            }}
+            aria-hidden
+          >
+            ➤
+          </div>
+        );
+      })}
+
       {players.map(p => {
         // Player slots are FIXED relative to the viewer — direction reversal only flips the
         // animated outline below, so players never visually swap places mid-game.
