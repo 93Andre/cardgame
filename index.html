@@ -11,6 +11,18 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Latrine" />
     <link rel="apple-touch-icon" href="/icon.svg" />
+
+    <!-- Google Analytics (gtag.js, GA4). Loaded async so it doesn't block
+         render. The SPA never changes URL (everything is on "/"), so the
+         default page_view only fires once on load — App.tsx fires manual
+         page_view events on mode change to track menu → game → profile etc. -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-P7E2QM68KJ"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'G-P7E2QM68KJ', { send_page_view: false });
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -26,6 +26,7 @@ import {
 } from './shared/game';
 import { useNetwork, type NetworkConn, type ChatMsg, loadSession, clearSession } from './net';
 import { useAuth, recordMatch, supabaseEnabled, checkUsernameAvailable, fetchLeaderboard, fetchRecentMatches, updateUsername, updateAvatar, signUpWithPassword, signInWithPassword, resetPassword, setNewPassword, AVATARS, avatarDef, USERNAME_RE, USERNAME_MIN, USERNAME_MAX, PASSWORD_MIN, type SupabaseStats, type AuthState, type LeaderboardRow, type MatchHistoryRow } from './auth';
+import { pageview } from './analytics';
 import { useHaptics } from './hooks/useHaptics';
 
 /* ============== Sound (Web Audio synth, no assets) ============== */
@@ -4831,6 +4832,14 @@ export default function App() {
   // game). Cheap query and the user expects to see the new W/L immediately.
   useEffect(() => {
     if (mode === 'menu') auth.refreshStats();
+  }, [mode]);
+
+  // GA4 page_view on every mode change — the SPA never changes URL, so
+  // without this GA only sees the initial load and never the menu → game →
+  // leaderboard → profile flow. Names are stable so they aggregate cleanly
+  // in Reports → Engagement → Pages and screens.
+  useEffect(() => {
+    pageview(mode);
   }, [mode]);
 
   let body: React.ReactNode;
