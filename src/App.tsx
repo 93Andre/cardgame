@@ -29,7 +29,7 @@ import { useHaptics } from './hooks/useHaptics';
 
 /* ============== Sound (Web Audio synth, no assets) ============== */
 
-type SoundName = 'play' | 'pickup' | 'burn' | 'reset' | 'skip' | 'reverse' | 'seven' | 'win' | 'click' | 'emote';
+type SoundName = 'play' | 'pickup' | 'burn' | 'reset' | 'skip' | 'reverse' | 'seven' | 'win' | 'click' | 'emote' | 'yourTurn';
 
 class SoundEngine {
   private ctx: AudioContext | null = null;
@@ -184,6 +184,15 @@ class SoundEngine {
       case 'win': [523, 659, 784, 1046].forEach((f, i) => this.tone(f, 0.22, 'triangle', 0.18, i * 0.12)); break;
       case 'click': this.tone(880, 0.03, 'square', 0.06); break;
       case 'emote': this.tone(750, 0.06, 'triangle', 0.10); break;
+      // Your-turn chime: two-note ascending sine ding (C5 → G5) with a soft
+      // overtone sparkle. Distinct from any gameplay event so a backgrounded
+      // tab nudges the player without being mistaken for a 7-lock or play.
+      case 'yourTurn': {
+        this.tone(523.25, 0.13, 'sine',     0.18);          // C5 head
+        this.tone(783.99, 0.22, 'sine',     0.16, 0.07);    // G5 ascending
+        this.tone(1567.98, 0.18, 'triangle', 0.06, 0.07);   // soft sparkle harmonic
+        break;
+      }
     }
   }
 
@@ -1607,13 +1616,14 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
   }, []);
   const turnElapsedMs = now - turnStartRef.current;
 
-  // Turn-alert chime: when it becomes the viewer's turn, play a short ding so they
-  // notice in a backgrounded tab. Skip the very first transition (game start) — that's
-  // covered by the deal animation — and skip when the page is hidden.
+  // Turn-alert chime: when it becomes the viewer's turn, play a short
+  // dedicated two-note ding so a backgrounded tab nudges the player. Distinct
+  // from every gameplay-event sound so it's never confused with a 7-lock or
+  // a normal play.
   const wasMyTurnRef = useRef(false);
   useEffect(() => {
     if (isMyTurn && !wasMyTurnRef.current && state.phase === 'play') {
-      sfx.play('seven');     // existing short blip — works as a "your turn" chime
+      sfx.play('yourTurn');
     }
     wasMyTurnRef.current = isMyTurn;
   }, [isMyTurn, state.phase]);
