@@ -6,7 +6,7 @@ export interface LobbyView {
   myId: number;            // -1 for spectator
   hostId: number;
   started: boolean;
-  players: { id: number; name: string; connected: boolean; isAi: boolean }[];
+  players: { id: number; name: string; connected: boolean; isAi: boolean; avatar: string | null }[];
   emotes: { id: string; playerId: number; emoji: string; ts: number }[];
   chats: ChatMsg[];        // last ~30 messages
   private: boolean;        // unlisted; only joinable via the room code
@@ -41,8 +41,8 @@ export type ServerMsg =
   | { t: 'ERR'; msg: string };
 
 export type ClientMsg =
-  | { t: 'CREATE'; name: string; private?: boolean }
-  | { t: 'JOIN'; code: string; name: string }
+  | { t: 'CREATE'; name: string; private?: boolean; avatar?: string }
+  | { t: 'JOIN'; code: string; name: string; avatar?: string }
   | { t: 'RESUME'; code: string; token: string }
   | { t: 'SPECTATE'; code: string }
   | { t: 'LIST_ROOMS' }
