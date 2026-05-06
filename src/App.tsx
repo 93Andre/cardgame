@@ -25,7 +25,7 @@ import {
   reducer,
 } from './shared/game';
 import { useNetwork, type NetworkConn, type ChatMsg, loadSession, clearSession } from './net';
-import { useAuth, recordMatch, supabaseEnabled, checkUsernameAvailable, fetchLeaderboard, fetchRecentMatches, updateUsername, updateAvatar, AVATARS, avatarDef, USERNAME_RE, USERNAME_MIN, USERNAME_MAX, type SupabaseStats, type AuthState, type LeaderboardRow, type MatchHistoryRow } from './auth';
+import { useAuth, recordMatch, supabaseEnabled, checkUsernameAvailable, fetchLeaderboard, fetchRecentMatches, updateUsername, updateAvatar, signUpWithPassword, signInWithPassword, resetPassword, setNewPassword, AVATARS, avatarDef, USERNAME_RE, USERNAME_MIN, USERNAME_MAX, PASSWORD_MIN, type SupabaseStats, type AuthState, type LeaderboardRow, type MatchHistoryRow } from './auth';
 import { useHaptics } from './hooks/useHaptics';
 
 /* ============== Sound (Web Audio synth, no assets) ============== */
@@ -2174,6 +2174,11 @@ function MenuScreen({ onLocal, onNetwork, onLeaderboard, onProfile, prefilledCod
   const localStatsLS = loadStats();
   const localName = loadName();
   const [signInOpen, setSignInOpen] = useState(false);
+  // Force-open the modal when the user lands here via a password-reset
+  // email — the modal itself swaps into "set new password" mode.
+  useEffect(() => {
+    if (auth.passwordRecovery) setSignInOpen(true);
+  }, [auth.passwordRecovery]);
   // Stored online session — if present, the user was last in a real room.
   // The RESUME flow on the server will reject stale tokens, so we offer a
   // "Resume" CTA but also a way to dismiss it.
@@ -2292,25 +2297,30 @@ function MenuScreen({ onLocal, onNetwork, onLeaderboard, onProfile, prefilledCod
   );
 }
 
-// Magic-link sign-in / sign-up modal. Two tabs:
-//   • Sign in — email only. Returning users skip the username step entirely.
-//   • Sign up — email + username. Username is validated client-side for
-//     format and (debounced) checked against the server for availability
-//     before the form will submit.
-// On submit, both tabs use signInWithOtp; the difference is whether we
-// pass `username` in user_metadata (only first-time signup uses it).
+// Auth modal — email + password is the primary flow (more reliable than
+// magic-link delivery), with magic-link as a fallback option below the form.
+//   • Sign in — email + password. Has "Forgot password?" + "Send magic link"
+//   • Sign up — username (validated + availability-checked) + email + password
+// Password-recovery state is detected at the auth-hook level; when active
+// we swap the body for a "set new password" prompt regardless of tab.
 type AuthMode = 'signin' | 'signup';
 function SignInModal({ auth, onClose }: { auth: AuthState; onClose: () => void }) {
   const [mode, setMode] = useState<AuthMode>('signin');
   const [email, setEmail] = useState('');
   const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
-  const [sent, setSent] = useState(false);
+  // 'magic' = magic-link success; 'confirmation' = password signup pending
+  // email confirmation; 'reset' = password-reset email sent
+  const [sent, setSent] = useState<null | 'magic' | 'confirmation' | 'reset'>(null);
   const [error, setError] = useState<string | null>(null);
+  // Show the magic-link fallback row only after the user explicitly opens it
+  // — avoids two competing call-to-actions on the primary form.
+  const [magicOpen, setMagicOpen] = useState(false);
+  // Forgot-password flow: simple email input → reset email sent.
+  const [forgotOpen, setForgotOpen] = useState(false);
 
-  // Username availability — null = unchecked, true = available, false = taken,
-  // 'invalid' = format failure. Debounced 350ms after the last keystroke so we
-  // don't hammer the RPC.
+  // Username availability check (signup only).
   const [available, setAvailable] = useState<null | true | false | 'invalid' | 'checking'>(null);
   useEffect(() => {
     if (mode !== 'signup') return;
@@ -2329,25 +2339,63 @@ function SignInModal({ auth, onClose }: { auth: AuthState; onClose: () => void }
   }, [username, mode]);
 
   const usernameOk = mode === 'signin' || available === true;
-  const canSubmit = !!email.trim() && !busy && (mode === 'signin' || usernameOk);
+  const passwordOk = password.length >= PASSWORD_MIN;
+  const canSubmit = !!email.trim() && passwordOk && !busy && (mode === 'signin' || usernameOk);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSubmit) return;
     setBusy(true); setError(null);
+    let r: { ok: true } | { ok: true; needsConfirmation: boolean } | { ok: false; error: string };
+    if (mode === 'signin') {
+      r = await signInWithPassword(email.trim(), password);
+    } else {
+      r = await signUpWithPassword(email.trim(), password, { username: username.trim() });
+    }
+    setBusy(false);
+    if (!r.ok) { setError(r.error); return; }
+    // Signup that requires confirmation → show "check your email" success.
+    // Signup that immediately signs in (Supabase project setting allows it),
+    // or a successful sign-in → close the modal; the auth hook will pick up
+    // the new session.
+    if (mode === 'signup' && (r as any).needsConfirmation) {
+      setSent('confirmation');
+    } else {
+      onClose();
+    }
+  };
+
+  const onMagic = async () => {
+    if (!email.trim() || busy) return;
+    setBusy(true); setError(null);
     const r = await auth.signInWithEmail(
       email.trim(),
-      mode === 'signup' ? { username: username.trim() } : undefined,
+      mode === 'signup' && username.trim() ? { username: username.trim() } : undefined,
     );
     setBusy(false);
-    if (r.ok) setSent(true);
+    if (r.ok) setSent('magic');
     else setError(r.error);
   };
+
+  const onForgot = async () => {
+    if (!email.trim() || busy) return;
+    setBusy(true); setError(null);
+    const r = await resetPassword(email.trim());
+    setBusy(false);
+    if (r.ok) { setSent('reset'); setForgotOpen(false); }
+    else setError(r.error);
+  };
+
+  // Recovery: user landed here from a "reset password" email. Show a tight
+  // "set new password" prompt and ignore the rest of the modal.
+  if (auth.passwordRecovery) {
+    return <SetNewPasswordModal auth={auth} onClose={onClose} />;
+  }
 
   const tabBtn = (m: AuthMode, label: string) => (
     <button
       type="button"
-      onClick={() => { setMode(m); setError(null); }}
+      onClick={() => { setMode(m); setError(null); setSent(null); setMagicOpen(false); setForgotOpen(false); }}
       className={`flex-1 px-3 py-2 rounded-md text-sm font-semibold transition-colors ${
         mode === m
           ? 'bg-white text-gray-900 shadow-sm'
@@ -2379,22 +2427,33 @@ function SignInModal({ auth, onClose }: { auth: AuthState; onClose: () => void }
           </h3>
           <p className="text-sm text-gray-600">
             {mode === 'signin'
-              ? 'Enter your email — we\'ll send a one-tap link. No password to remember.'
-              : 'Pick a username and enter your email. We\'ll send a one-tap link to confirm.'}
+              ? 'Enter your email and password.'
+              : 'Pick a username, enter your email and a password.'}
           </p>
         </div>
 
-        {/* Tab toggle — segmented control */}
         <div className="flex bg-gray-100 rounded-lg p-1">
           {tabBtn('signin', 'Sign in')}
           {tabBtn('signup', 'Create account')}
         </div>
 
-        {sent ? (
+        {sent === 'magic' && (
           <div className="rounded-lg bg-emerald-50 border border-emerald-200 p-3 text-sm text-emerald-900">
-            ✉️ Check your inbox at <strong>{email}</strong>. Click the link to finish — you can close this tab.
+            ✉️ Magic link sent to <strong>{email}</strong>. Click it to finish — you can close this tab.
           </div>
-        ) : (
+        )}
+        {sent === 'confirmation' && (
+          <div className="rounded-lg bg-emerald-50 border border-emerald-200 p-3 text-sm text-emerald-900">
+            ✉️ Confirmation email sent to <strong>{email}</strong>. Click the link to activate, then sign in with your password.
+          </div>
+        )}
+        {sent === 'reset' && (
+          <div className="rounded-lg bg-emerald-50 border border-emerald-200 p-3 text-sm text-emerald-900">
+            ✉️ Reset link sent to <strong>{email}</strong>. Click it and choose a new password.
+          </div>
+        )}
+
+        {!sent && (
           <form onSubmit={onSubmit} className="flex flex-col gap-3">
             {mode === 'signup' && (
               <div className="flex flex-col gap-1">
@@ -2436,19 +2495,137 @@ function SignInModal({ auth, onClose }: { auth: AuthState; onClose: () => void }
               onChange={e => setEmail(e.target.value)}
               placeholder="you@example.com"
               required
+              autoComplete={mode === 'signin' ? 'username' : 'email'}
               className="px-3 py-2 border border-gray-300 rounded text-sm"
             />
+            <div className="flex flex-col gap-1">
+              <input
+                type="password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                placeholder="Password"
+                required
+                minLength={PASSWORD_MIN}
+                autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
+                className="px-3 py-2 border border-gray-300 rounded text-sm"
+              />
+              {mode === 'signup' && (
+                <div className={`text-[11px] ${password.length === 0 ? 'text-gray-500' : passwordOk ? 'text-emerald-700' : 'text-rose-700'}`}>
+                  {password.length === 0 ? `At least ${PASSWORD_MIN} characters` : passwordOk ? '✓ Looks good' : `At least ${PASSWORD_MIN} characters`}
+                </div>
+              )}
+            </div>
             {error && <div className="text-xs text-rose-700">{error}</div>}
             <button
               type="submit"
               disabled={!canSubmit}
               className={`px-4 py-2 rounded font-semibold ${canSubmit ? 'bg-indigo-500 hover:bg-indigo-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
             >
-              {busy ? 'Sending…' : mode === 'signin' ? 'Send magic link' : 'Create account & send link'}
+              {busy ? 'Working…' : mode === 'signin' ? 'Sign in' : 'Create account'}
             </button>
+
+            {/* Secondary actions row — forgot pw + magic-link fallback */}
+            {mode === 'signin' && (
+              <div className="flex flex-col gap-1.5 text-xs text-gray-600">
+                {forgotOpen ? (
+                  <div className="flex items-center justify-between gap-2 bg-gray-50 border border-gray-200 rounded px-2 py-1.5">
+                    <span className="truncate">Send reset link to <strong>{email || 'your email'}</strong>?</span>
+                    <div className="flex gap-1.5">
+                      <button type="button" onClick={onForgot} disabled={!email.trim() || busy} className="text-indigo-700 font-semibold hover:underline disabled:text-gray-400">Send</button>
+                      <button type="button" onClick={() => setForgotOpen(false)} className="text-gray-500 hover:underline">Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <button type="button" onClick={() => setForgotOpen(true)} className="self-start text-gray-600 hover:text-gray-900 hover:underline">Forgot password?</button>
+                )}
+              </div>
+            )}
+
+            {/* Magic-link fallback — collapsed by default */}
+            {magicOpen ? (
+              <div className="flex items-center justify-between gap-2 text-xs bg-gray-50 border border-gray-200 rounded px-2 py-1.5">
+                <span className="truncate">Send a one-tap link to <strong>{email || 'your email'}</strong>?</span>
+                <div className="flex gap-1.5">
+                  <button type="button" onClick={onMagic} disabled={!email.trim() || busy} className="text-indigo-700 font-semibold hover:underline disabled:text-gray-400">Send</button>
+                  <button type="button" onClick={() => setMagicOpen(false)} className="text-gray-500 hover:underline">Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <button type="button" onClick={() => setMagicOpen(true)} className="text-xs text-gray-500 hover:text-gray-800 self-center hover:underline">
+                Or send a magic link instead
+              </button>
+            )}
           </form>
         )}
         <button onClick={onClose} className="text-xs text-gray-500 hover:text-gray-800 self-center">Close</button>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// Tight prompt for the password-recovery flow — shown when the user clicks
+// a reset email and lands back here in a recovery session.
+function SetNewPasswordModal({ auth, onClose }: { auth: AuthState; onClose: () => void }) {
+  const [pw, setPw] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busy || pw.length < PASSWORD_MIN) return;
+    setBusy(true); setError(null);
+    const r = await setNewPassword(pw);
+    setBusy(false);
+    if (!r.ok) { setError(r.error); return; }
+    setDone(true);
+    auth.clearPasswordRecovery();
+    setTimeout(onClose, 1200);
+  };
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 bg-stone-900/65 backdrop-blur-sm flex items-center justify-center p-6"
+      onClick={() => { /* don't close on backdrop — recovery flow needs intent */ }}
+    >
+      <motion.div
+        initial={{ y: 12, opacity: 0, scale: 0.96 }}
+        animate={{ y: 0, opacity: 1, scale: 1 }}
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 flex flex-col gap-4"
+        role="dialog"
+        aria-label="Set a new password"
+      >
+        <div>
+          <h3 className="text-xl font-bold mb-1">Set a new password</h3>
+          <p className="text-sm text-gray-600">You're signed in via the reset link. Pick a new password to finish.</p>
+        </div>
+        {done ? (
+          <div className="rounded-lg bg-emerald-50 border border-emerald-200 p-3 text-sm text-emerald-900">
+            ✓ Password updated. You're signed in.
+          </div>
+        ) : (
+          <form onSubmit={onSubmit} className="flex flex-col gap-3">
+            <input
+              type="password"
+              autoFocus
+              value={pw}
+              onChange={e => setPw(e.target.value)}
+              placeholder="New password"
+              required
+              minLength={PASSWORD_MIN}
+              autoComplete="new-password"
+              className="px-3 py-2 border border-gray-300 rounded text-sm"
+            />
+            <div className="text-[11px] text-gray-500">At least {PASSWORD_MIN} characters</div>
+            {error && <div className="text-xs text-rose-700">{error}</div>}
+            <button
+              type="submit"
+              disabled={busy || pw.length < PASSWORD_MIN}
+              className={`px-4 py-2 rounded font-semibold ${busy || pw.length < PASSWORD_MIN ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-indigo-500 hover:bg-indigo-600 text-white'}`}
+            >
+              {busy ? 'Saving…' : 'Save & sign in'}
+            </button>
+          </form>
+        )}
       </motion.div>
     </motion.div>
   );

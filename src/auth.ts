@@ -104,6 +104,10 @@ export interface AuthState {
   signInWithEmail: (email: string, opts?: { username?: string }) => Promise<{ ok: true } | { ok: false; error: string }>;
   signOut: () => Promise<void>;
   refreshStats: () => Promise<void>;
+  // True when the user just clicked a password-reset link — they're in a
+  // recovery session and the modal should show a "set new password" prompt.
+  passwordRecovery: boolean;
+  clearPasswordRecovery: () => void;
 }
 
 /** Username-format rules mirrored from the server-side check constraint. */
@@ -126,6 +130,7 @@ export function useAuth(): AuthState {
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [stats, setStats] = useState<SupabaseStats | null>(null);
+  const [passwordRecovery, setPasswordRecovery] = useState(false);
   const mountedRef = useRef(true);
 
   // Fetch the user's profile + stats in one go. Profile is auto-created on
@@ -151,9 +156,10 @@ export function useAuth(): AuthState {
       setReady(true);
       if (data.session?.user) loadAll(data.session.user.id);
     });
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, sess) => {
       if (!mountedRef.current) return;
       setSession(sess);
+      if (event === 'PASSWORD_RECOVERY') setPasswordRecovery(true);
       if (sess?.user) loadAll(sess.user.id);
       else { setProfile(null); setStats(null); }
     });
@@ -163,6 +169,8 @@ export function useAuth(): AuthState {
     };
   }, []);
 
+  // Magic-link path (kept as a fallback for users whose password is forgotten
+  // or whose email blocks the OTP fine but the password less reliably).
   const signInWithEmail = async (email: string, opts?: { username?: string }) => {
     if (!supabase) return { ok: false as const, error: 'Auth not configured' };
     // Pass `username` through user_metadata. The signup trigger reads
@@ -195,7 +203,71 @@ export function useAuth(): AuthState {
     if (mountedRef.current) setStats((data as SupabaseStats) ?? null);
   };
 
-  return { ready, session, profile, stats, signInWithEmail, signOut, refreshStats };
+  const clearPasswordRecovery = () => setPasswordRecovery(false);
+
+  return { ready, session, profile, stats, signInWithEmail, signOut, refreshStats, passwordRecovery, clearPasswordRecovery };
+}
+
+/* ============== Email + password (primary auth flow) ============== */
+
+/** Minimum password length the UI enforces. Supabase's default minimum is 6;
+ *  bumping client-side encourages something at least slightly resistant to
+ *  guessing without being annoying. */
+export const PASSWORD_MIN = 8;
+
+/** Sign up with email + password. Username goes into user_metadata so the
+ *  signup trigger picks it up for the new profile row. The user receives
+ *  a confirmation email; until they click it Supabase rejects sign-in with
+ *  "Email not confirmed" — we surface that text directly. */
+export async function signUpWithPassword(email: string, password: string, opts?: { username?: string }): Promise<{ ok: true; needsConfirmation: boolean } | { ok: false; error: string }> {
+  if (!supabase) return { ok: false, error: 'Auth not configured' };
+  if (password.length < PASSWORD_MIN) {
+    return { ok: false, error: `Password must be at least ${PASSWORD_MIN} characters` };
+  }
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password,
+    options: {
+      emailRedirectTo: window.location.origin + window.location.pathname,
+      data: opts?.username ? { username: opts.username } : undefined,
+    },
+  });
+  if (error) return { ok: false, error: error.message };
+  // session === null means the project requires email confirmation before
+  // sign-in; we tell the modal so it can show a "check your inbox" message.
+  return { ok: true, needsConfirmation: !data.session };
+}
+
+/** Standard email + password sign in. */
+export async function signInWithPassword(email: string, password: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!supabase) return { ok: false, error: 'Auth not configured' };
+  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+/** Trigger a password-reset email. The link in the email lands the user
+ *  back here in a recovery session; the modal listens for that and shows a
+ *  "set new password" prompt. */
+export async function resetPassword(email: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!supabase) return { ok: false, error: 'Auth not configured' };
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: window.location.origin + window.location.pathname,
+  });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+/** Set a new password — used during the password-recovery flow after the
+ *  user clicks the reset email and returns with a recovery session. */
+export async function setNewPassword(password: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!supabase) return { ok: false, error: 'Auth not configured' };
+  if (password.length < PASSWORD_MIN) {
+    return { ok: false, error: `Password must be at least ${PASSWORD_MIN} characters` };
+  }
+  const { error } = await supabase.auth.updateUser({ password });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
 }
 
 /* ============== Match write ============== */
