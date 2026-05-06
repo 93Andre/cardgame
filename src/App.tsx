@@ -499,12 +499,13 @@ function PlayerArea({ player, isCurrent, isViewer, compact, faceDownClickable, o
 
 // Arranges player tiles around a central pile area, with the viewer always at the bottom
 // and other players spread clockwise (or counter-clockwise) by turn order.
-function CircularTable({ players, current, viewer, direction, directionFlashKey, renderPlayer, centerContent }: {
+function CircularTable({ players, current, viewer, direction, directionFlashKey, pickupAnim, renderPlayer, centerContent }: {
   players: Player[];
   current: number;
   viewer: number;
   direction: 1 | -1;
   directionFlashKey?: number;        // bumps when direction flips → triggers chevron flash
+  pickupAnim?: { key: number; pickerId: number; count: number } | null;
   renderPlayer: (p: Player, isNext: boolean, compact: boolean) => React.ReactNode;
   centerContent: React.ReactNode;
 }) {
@@ -633,6 +634,45 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
       <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
         {centerContent}
       </div>
+
+      {/* Pile-pickup animation: card-backs fly from the centre pile to the
+          picker's tile. Reuses the same slot math as the player tiles, so the
+          target lands exactly on their position regardless of orientation. */}
+      <AnimatePresence>
+        {pickupAnim && (() => {
+          const slot = (pickupAnim.pickerId - safeViewer + n) % n;
+          const baseAngle = 90 + (slot / n) * 360;
+          const angle = baseAngle * Math.PI / 180;
+          const targetX = 50 + Math.cos(angle) * rx * 100;
+          const targetY = 50 + Math.sin(angle) * ry * 100;
+          return Array.from({ length: pickupAnim.count }).map((_, i) => {
+            // Stagger and slight angular jitter so the cards "fan out" mid-flight
+            // instead of stacking like a single sprite.
+            const jitter = (i - pickupAnim.count / 2) * 1.2;
+            const delay = i * 0.025;
+            return (
+              <motion.div
+                key={`pickup-${pickupAnim.key}-${i}`}
+                initial={{ left: '50%', top: '50%', x: '-50%', y: '-50%', scale: 1, opacity: 1, rotate: 0 }}
+                animate={{
+                  left: `${targetX + jitter}%`,
+                  top:  `${targetY + jitter * 0.4}%`,
+                  x: '-50%', y: '-50%',
+                  scale: 0.45,
+                  opacity: 0,
+                  rotate: jitter * 2,
+                }}
+                transition={{ duration: 0.55, delay, ease: [0.4, 0.0, 0.2, 1] }}
+                className="absolute pointer-events-none w-10 h-14 sm:w-12 sm:h-16 rounded-md bg-indigo-600 border border-indigo-800 shadow-lg flex items-center justify-center text-[10px] font-black tracking-widest text-white/85"
+                style={{ zIndex: 30 }}
+                aria-hidden
+              >
+                PH
+              </motion.div>
+            );
+          });
+        })()}
+      </AnimatePresence>
     </div>
   );
 }
@@ -1578,6 +1618,34 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
     }
   }, [state.direction]);
 
+  // Pile-pickup animation: when "<name> picked up the pile" appears in the log,
+  // we flash a one-shot overlay of card-backs from the centre pile flying to that
+  // player's tile. We must snapshot the *previous* pile length because by the
+  // time the log line lands, state.pile is already []. Self-clearing after the
+  // animation duration so a second pickup re-fires the overlay.
+  const [pickupAnim, setPickupAnim] = useState<{ key: number; pickerId: number; count: number } | null>(null);
+  const prevPileLenRef = useRef(state.pile.length);
+  const pickupKeyRef = useRef(0);
+  const pickupLogLenRef = useRef(state.log.length);
+  useEffect(() => {
+    const newLines = state.log.slice(pickupLogLenRef.current);
+    pickupLogLenRef.current = state.log.length;
+    const prevPile = prevPileLenRef.current;
+    prevPileLenRef.current = state.pile.length;
+    for (const line of newLines) {
+      const m = line.match(/^([^\n]+?)\s+picked up the pile/i);
+      if (!m) continue;
+      const name = m[1].trim();
+      const idx = state.players.findIndex(p => p.name === name);
+      if (idx < 0) continue;
+      pickupKeyRef.current += 1;
+      // Cap visible cards at 12 — past that they overlap so heavily it's just noise.
+      setPickupAnim({ key: pickupKeyRef.current, pickerId: idx, count: Math.min(prevPile || 1, 12) });
+      const t = setTimeout(() => setPickupAnim(null), 900);
+      return () => clearTimeout(t);
+    }
+  }, [state.log, state.pile.length, state.players]);
+
   // Ultimate mode: viewer can cut if they have cards matching the top of the pile.
   const myCutMatches = !isSpectator && state.mode === 'ultimate' && me ? cutMatches(state, viewer) : [];
   const canCut = myCutMatches.length > 0 && !isMyTurn; // cutting your own play is allowed but redundant — only show on others' turns
@@ -1690,6 +1758,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
                 viewer={safeViewer}
                 direction={state.direction}
                 directionFlashKey={directionFlashKey}
+                pickupAnim={pickupAnim}
                 renderPlayer={renderPlayerTile}
                 centerContent={center}
               />
