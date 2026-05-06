@@ -486,20 +486,18 @@ function PlayerArea({ player, isCurrent, isViewer, compact, faceDownClickable, o
           </div>
         </>
       )}
-      {/* floating emotes */}
+      {/* Floating emote bursts — animation variant chosen per-emoji from the
+          catalogue so each reaction has its own personality (🔥 spawns four
+          flames, 💀 shakes, 🃏 flips, etc.). Falls back to a generic 'rise'
+          for any emoji not in the catalogue. */}
       <AnimatePresence>
-        {(emotes ?? []).filter(e => e.playerId === player.id).slice(-1).map(e => (
-          <motion.div
-            key={e.id}
-            initial={{ opacity: 0, y: 0, scale: 0.5 }}
-            animate={{ opacity: 1, y: -40, scale: 1.2 }}
-            exit={{ opacity: 0, y: -80 }}
-            transition={{ duration: 1.4 }}
-            className="absolute right-2 top-2 text-3xl pointer-events-none"
-          >
-            {e.emoji}
-          </motion.div>
-        ))}
+        {(emotes ?? []).filter(e => e.playerId === player.id).slice(-1).map(e => {
+          const def = EMOTE_BY_EMOJI[e.emoji] ?? { emoji: e.emoji, label: '', anim: 'rise' as EmoteAnim };
+          // Cheap deterministic seed for jitter so multiple bursts don't all
+          // animate identically — derived from the emote's wire id.
+          const seed = e.id.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
+          return <EmoteBurst key={e.id} def={def} seed={seed} />;
+        })}
       </AnimatePresence>
     </div>
   );
@@ -1970,35 +1968,189 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
   );
 }
 
+/* ============== Expressive emote pack ============== */
+
+type EmoteAnim = 'bounce' | 'rise' | 'shake' | 'spawn' | 'wiggle' | 'flip';
+interface EmoteDef {
+  emoji: string;
+  label: string;
+  anim: EmoteAnim;
+  count?: number;        // spawn count for 'spawn' animation
+  glow?: string;         // optional ambient color glow
+}
+// Lookup by emoji char; emojis sent over the wire are still single-char so the
+// network protocol doesn't change — animation metadata is purely client-side.
+const EMOTES: EmoteDef[] = [
+  { emoji: '👍', label: 'nice',     anim: 'bounce', glow: 'rgba(52,211,153,0.45)' },
+  { emoji: '🔥', label: 'fire',     anim: 'spawn',  count: 4, glow: 'rgba(244,114,28,0.55)' },
+  { emoji: '❤️', label: 'love',     anim: 'spawn',  count: 3, glow: 'rgba(244,63,94,0.45)' },
+  { emoji: '🎉', label: 'party',    anim: 'spawn',  count: 5, glow: 'rgba(251,191,36,0.45)' },
+  { emoji: '👏', label: 'clap',     anim: 'shake' },
+  { emoji: '😂', label: 'lol',      anim: 'wiggle' },
+  { emoji: '💩', label: 'poop',     anim: 'rise' },
+  { emoji: '🤡', label: 'clown',    anim: 'flip' },
+  { emoji: '😱', label: 'shock',    anim: 'shake', glow: 'rgba(244,63,94,0.4)' },
+  { emoji: '😎', label: 'cool',     anim: 'rise' },
+  { emoji: '🤯', label: 'mind blown', anim: 'spawn', count: 3 },
+  { emoji: '💀', label: 'rip',      anim: 'shake' },
+  { emoji: '🥱', label: 'bored',    anim: 'rise' },
+  { emoji: '🫵', label: 'callout',  anim: 'bounce' },
+  { emoji: '✂️', label: 'cut!',     anim: 'wiggle', glow: 'rgba(232,121,249,0.45)' },
+  { emoji: '🃏', label: 'wild',     anim: 'flip',   glow: 'rgba(167,139,250,0.45)' },
+];
+const EMOTE_BY_EMOJI: Record<string, EmoteDef> =
+  Object.fromEntries(EMOTES.map(e => [e.emoji, e]));
+
+const EMOTE_FAVS_KEY = 'ph_emote_favs';
+const DEFAULT_FAVS = ['👍', '😂', '🔥', '💩', '😱'];
+function loadFavs(): string[] {
+  try {
+    const raw = localStorage.getItem(EMOTE_FAVS_KEY);
+    if (!raw) return DEFAULT_FAVS;
+    const arr = JSON.parse(raw);
+    if (Array.isArray(arr) && arr.every(x => typeof x === 'string')) {
+      // Filter to known emojis so a stale storage entry from an older version
+      // doesn't render orphan glyphs.
+      const valid = arr.filter(e => EMOTE_BY_EMOJI[e]).slice(0, 5);
+      return valid.length > 0 ? valid : DEFAULT_FAVS;
+    }
+  } catch { /* ignore */ }
+  return DEFAULT_FAVS;
+}
+function saveFavs(favs: string[]) {
+  try { localStorage.setItem(EMOTE_FAVS_KEY, JSON.stringify(favs.slice(0, 5))); } catch { /* ignore */ }
+}
+
+// Renders a single emote burst on a player tile. Animation variant is chosen
+// per emoji from the catalog so each reaction has its own personality —
+// "🔥" spawns multiple flames, "💀" shakes, "👏" claps left/right, etc.
+function EmoteBurst({ def, seed }: { def: EmoteDef; seed: number }) {
+  const count = def.count ?? 1;
+  return (
+    <>
+      {Array.from({ length: count }).map((_, i) => {
+        const xJitter = count > 1 ? (i - (count - 1) / 2) * 18 + (((seed * (i + 1)) % 7) - 3) : 0;
+        const tilt = count > 1 ? ((seed + i * 31) % 30) - 15 : 0;
+        const delay = i * 0.07;
+        const animProps = (() => {
+          switch (def.anim) {
+            case 'bounce': return {
+              initial: { opacity: 0, scale: 0.4, y: 0 },
+              animate: { opacity: [0, 1, 1, 0], scale: [0.4, 1.4, 1.0, 1.0], y: [0, -22, -16, -42] },
+              transition: { duration: 1.4, delay, times: [0, 0.25, 0.5, 1] },
+            };
+            case 'rise': return {
+              initial: { opacity: 0, y: 4, scale: 0.7 },
+              animate: { opacity: [0, 1, 1, 0], y: [4, -28, -54, -86], scale: [0.7, 1.1, 1.05, 1.0] },
+              transition: { duration: 1.6, delay, times: [0, 0.2, 0.6, 1], ease: 'easeOut' as const },
+            };
+            case 'shake': return {
+              initial: { opacity: 0, scale: 0.6, rotate: 0 },
+              animate: { opacity: [0, 1, 1, 0], scale: [0.6, 1.25, 1.1, 1.0], rotate: [0, -18, 18, -10, 0], y: [0, -10, -20, -40] },
+              transition: { duration: 1.4, delay, times: [0, 0.15, 0.5, 0.8, 1] },
+            };
+            case 'spawn': return {
+              initial: { opacity: 0, scale: 0.3, x: xJitter, y: 8, rotate: tilt },
+              animate: { opacity: [0, 1, 1, 0], scale: [0.3, 1.2, 1.0, 0.9], y: [8, -28, -60, -100], rotate: [tilt, tilt + 8, tilt - 4, tilt] },
+              transition: { duration: 1.7, delay, times: [0, 0.18, 0.6, 1], ease: 'easeOut' },
+            };
+            case 'wiggle': return {
+              initial: { opacity: 0, scale: 0.5, rotate: 0 },
+              animate: { opacity: [0, 1, 1, 0], scale: [0.5, 1.35, 1.1, 1.0], rotate: [0, 12, -10, 8, -6, 0], y: [0, -16, -28, -48] },
+              transition: { duration: 1.5, delay, times: [0, 0.15, 0.4, 0.6, 0.85, 1] },
+            };
+            case 'flip': return {
+              initial: { opacity: 0, scale: 0.4, rotateY: 0 },
+              animate: { opacity: [0, 1, 1, 0], scale: [0.4, 1.2, 1.05, 1.0], rotateY: [0, 360, 720, 720], y: [0, -22, -34, -58] },
+              transition: { duration: 1.6, delay, times: [0, 0.4, 0.7, 1] },
+            };
+          }
+        })();
+        return (
+          <motion.div
+            key={i}
+            // Cast: framer-motion's Easing type is a string-literal union and the
+            // IIFE above widens our 'easeOut' to plain string. Runtime is fine.
+            {...(animProps as any)}
+            className="absolute right-2 top-2 text-3xl pointer-events-none"
+            style={{
+              filter: def.glow ? `drop-shadow(0 0 6px ${def.glow})` : undefined,
+              translateX: count > 1 ? xJitter : undefined,
+            }}
+          >
+            {def.emoji}
+          </motion.div>
+        );
+      })}
+    </>
+  );
+}
+
 function EmoteBar({ onEmote }: { onEmote: (e: string) => void }) {
   const [open, setOpen] = useState(false);
-  const emotes = ['👍', '😂', '💩', '🔥', '😱'];
+  const [picker, setPicker] = useState(false);
+  const [favs, setFavs] = useState<string[]>(loadFavs);
+  const send = (emoji: string) => {
+    onEmote(emoji);
+    // Promote the emoji to the top of favourites — recently-used floats up.
+    const next = [emoji, ...favs.filter(e => e !== emoji)].slice(0, 5);
+    setFavs(next);
+    saveFavs(next);
+    setOpen(false);
+    setPicker(false);
+  };
   return (
     <div className="fixed bottom-3 right-3 z-30">
       <AnimatePresence>
-        {open && (
+        {open && !picker && (
           <motion.div
+            key="favs"
             initial={{ opacity: 0, y: 12, scale: 0.85 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 12, scale: 0.85 }}
             transition={{ duration: 0.18, ease: 'easeOut' }}
-            className="absolute bottom-12 right-0 flex gap-1 bg-white/90 border border-gray-300 rounded-full px-2 py-1 shadow-lg"
+            className="absolute bottom-12 right-0 flex gap-1 bg-slate-900/85 backdrop-blur-md ring-1 ring-white/15 rounded-full px-2 py-1.5 shadow-[0_8px_24px_rgba(0,0,0,0.45)]"
           >
-            {emotes.map(e => (
+            {favs.map(emoji => (
               <button
-                key={e}
-                onClick={() => { onEmote(e); setOpen(false); }}
+                key={emoji}
+                onClick={() => send(emoji)}
                 className="text-xl hover:scale-125 transition-transform px-1 leading-none"
-                aria-label={`emote ${e}`}
-              >{e}</button>
+                aria-label={`emote ${emoji}`}
+              >{emoji}</button>
+            ))}
+            <button
+              onClick={() => setPicker(true)}
+              className="ml-1 text-sm text-white/70 hover:text-white px-2 leading-none border-l border-white/15"
+              title="More emotes"
+            >＋</button>
+          </motion.div>
+        )}
+        {open && picker && (
+          <motion.div
+            key="picker"
+            initial={{ opacity: 0, y: 12, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 12, scale: 0.95 }}
+            transition={{ duration: 0.2, ease: 'easeOut' }}
+            className="absolute bottom-12 right-0 grid grid-cols-6 gap-1 bg-slate-900/90 backdrop-blur-md ring-1 ring-white/15 rounded-2xl p-2 shadow-[0_10px_30px_rgba(0,0,0,0.5)] w-64"
+          >
+            {EMOTES.map(e => (
+              <button
+                key={e.emoji}
+                onClick={() => send(e.emoji)}
+                title={e.label}
+                className="text-xl hover:scale-125 hover:bg-white/10 rounded-md transition-all p-1.5 leading-none"
+                aria-label={`emote ${e.label}`}
+              >{e.emoji}</button>
             ))}
           </motion.div>
         )}
       </AnimatePresence>
       <button
-        onClick={() => setOpen(o => !o)}
+        onClick={() => { setOpen(o => !o); setPicker(false); }}
         title="Send an emote"
-        className="w-10 h-10 rounded-full bg-white/80 border border-gray-300 shadow text-xl hover:bg-white flex items-center justify-center"
+        className="w-10 h-10 rounded-full bg-slate-900/85 backdrop-blur-md ring-1 ring-white/15 shadow-lg text-xl hover:bg-slate-800 flex items-center justify-center"
       >{open ? '×' : '😀'}</button>
     </div>
   );
