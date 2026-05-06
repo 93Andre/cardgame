@@ -1992,8 +1992,10 @@ function RevealChoiceScreen({ state, dispatch, viewerId }: {
       <div className="max-w-3xl mx-auto px-4 sm:px-6 pt-3 pb-4 flex flex-col items-center gap-2.5">
         {/* Drag handle — purely decorative cue that this is a sheet. */}
         <div className="w-10 h-1 rounded-full bg-emerald-300/40" aria-hidden />
-        <div className="flex items-center gap-2 text-emerald-100">
-          <span className="text-xs uppercase tracking-[0.18em] font-bold text-emerald-300/80">Pick a card to reveal</span>
+        <div className="flex items-center gap-2">
+          <span className="text-sm sm:text-base font-bold text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)]">
+            Pick a card to reveal
+          </span>
         </div>
         <div className="flex flex-wrap gap-2 justify-center">
           {cards.map((card, idx) => (
