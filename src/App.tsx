@@ -24,12 +24,13 @@ import {
   nextActiveIndex,
   reducer,
 } from './shared/game';
-import { useNetwork, type NetworkConn } from './net';
+import { useNetwork, type NetworkConn, type ChatMsg, loadSession, clearSession } from './net';
+import { useAuth, recordMatch, supabaseEnabled, checkUsernameAvailable, fetchLeaderboard, fetchRecentMatches, updateUsername, updateAvatar, AVATARS, avatarDef, USERNAME_RE, USERNAME_MIN, USERNAME_MAX, type SupabaseStats, type AuthState, type LeaderboardRow, type MatchHistoryRow } from './auth';
 import { useHaptics } from './hooks/useHaptics';
 
 /* ============== Sound (Web Audio synth, no assets) ============== */
 
-type SoundName = 'play' | 'pickup' | 'burn' | 'reset' | 'skip' | 'reverse' | 'seven' | 'win' | 'click' | 'emote' | 'yourTurn';
+type SoundName = 'play' | 'pickup' | 'burn' | 'reset' | 'skip' | 'reverse' | 'seven' | 'win' | 'click' | 'emote' | 'yourTurn' | 'chain';
 
 class SoundEngine {
   private ctx: AudioContext | null = null;
@@ -172,10 +173,32 @@ class SoundEngine {
       src.onended = () => { try { src.disconnect(); g.disconnect(); } catch { /* ignore */ } };
     } catch { /* ignore */ }
   }
-  play(name: SoundName) {
+  play(name: SoundName, opts?: { count?: number }) {
     switch (name) {
       case 'play': this.tone(420, 0.08, 'triangle', 0.18); this.tone(640, 0.06, 'triangle', 0.10, 0.02); break;
-      case 'pickup': this.tone(220, 0.18, 'sawtooth', 0.12); this.tone(160, 0.20, 'sawtooth', 0.10, 0.05); break;
+      // Pickup: scales with the number of cards being picked up so a 2-card
+      // pickup feels light and a 25-card pickup feels heavy. Composition:
+      //   • Descending sawtooth sweep ("whoof") — duration grows with count
+      //   • Staccato "tap" cluster — one square pulse per card up to 8, each
+      //     slightly lower-pitched, simulating cards landing in the hand
+      //   • Low boom for big pickups (>=10) for satisfying weight
+      case 'pickup': {
+        const count = Math.max(1, opts?.count ?? 1);
+        const taps = Math.min(8, count);
+        const sweepDur = 0.18 + Math.min(0.4, count * 0.025);   // 0.18s..~0.45s
+        // Whoof — fast descending sawtooth, gain creeps up with count.
+        this.tone(420, sweepDur, 'sawtooth', 0.10 + Math.min(0.06, count * 0.005));
+        this.tone(140, sweepDur, 'sawtooth', 0.08 + Math.min(0.05, count * 0.004), 0.04);
+        // Tap cluster — staggered cards landing.
+        for (let i = 0; i < taps; i++) {
+          const freq = 280 - i * 14;
+          const delay = 0.06 + i * 0.04;
+          this.tone(freq, 0.05, 'square', 0.08 + Math.min(0.04, count * 0.002), delay);
+        }
+        // Low impact for big pickups.
+        if (count >= 10) this.tone(80, 0.28, 'sine', 0.18, 0.10);
+        break;
+      }
       case 'burn': this.noiseBurst(0.35, 0.22); this.tone(120, 0.30, 'sawtooth', 0.18); break;
       case 'reset': this.tone(520, 0.08, 'square', 0.12); this.tone(780, 0.10, 'square', 0.10, 0.06); break;
       case 'skip': this.tone(700, 0.08, 'square', 0.14); this.tone(500, 0.08, 'square', 0.14, 0.08); break;
@@ -192,6 +215,16 @@ class SoundEngine {
       case 'yourTurn': {
         this.tone(440,    0.13, 'sine', 0.13);          // A4 head
         this.tone(659.25, 0.20, 'sine', 0.11, 0.07);    // E5 ascending
+        break;
+      }
+      // Chain: short, rising "click-ding" — a tap (D5 triangle) into a
+      // brighter A5 with a quick E6 sparkle. Distinct from the CUT
+      // OBJECTION sample so a chain reads as "+1, you got another"
+      // rather than "GOTCHA". Total ~220ms, slightly louder than a play.
+      case 'chain': {
+        this.tone(587.33,  0.07, 'triangle', 0.20);          // D5 tap
+        this.tone(880,     0.10, 'triangle', 0.18, 0.06);    // A5 lift
+        this.tone(1318.51, 0.14, 'sine',     0.10, 0.06);    // E6 sparkle
         break;
       }
     }
@@ -250,9 +283,10 @@ function loadStats(): ProfileStats {
 function saveStats(s: ProfileStats) {
   try { localStorage.setItem(PROFILE_STATS_KEY, JSON.stringify(s)); } catch { /* ignore */ }
 }
-// Record a finished game's outcome for the local player. "win" = finished first
-// (finishPos === 0). "loss" = was the Poop Head. Other positions count as a "game"
-// only — this keeps win-rate honest in 4+ player games.
+// Record a finished game's outcome for the local player. "win" = finished
+// first (finishPos === 1; the reducer assigns 1-indexed places). "loss" =
+// was the Poop Head. Other positions count as a "game" only — this keeps
+// win-rate honest in 4+ player games.
 function recordOutcome(outcome: 'win' | 'loss' | 'middle') {
   const s = loadStats();
   s.games += 1;
@@ -289,18 +323,25 @@ interface CardFaceProps {
   dim?: boolean;
   jokerEffRank?: Rank | null;
   magnifyOnHover?: boolean;
-  cuttable?: boolean;                    // ultimate-mode: highlight as a one-click cut
+  cuttable?: boolean;                    // out-of-turn play available — fuchsia glow
+  chainable?: boolean;                   // chain (just-played player rank match) — emerald glow
 }
 
-function CardFace({ card, size, small, hidden, selected, onClick, dim, jokerEffRank, magnifyOnHover, cuttable }: CardFaceProps) {
+function CardFace({ card, size, small, hidden, selected, onClick, dim, jokerEffRank, magnifyOnHover, cuttable, chainable }: CardFaceProps) {
   const resolvedSize: 'tiny' | 'small' | 'normal' = size ?? (small ? 'small' : 'normal');
   const w =
     resolvedSize === 'tiny'  ? 'w-7 h-10 text-[8px]' :
     resolvedSize === 'small' ? 'w-9 h-12 text-[10px] sm:w-10 sm:h-14 sm:text-xs' :
                                'w-14 h-20 text-sm sm:w-16 sm:h-24 sm:text-base';
   const hoverCls = magnifyOnHover ? 'hover:scale-[2] hover:z-30 hover:shadow-2xl' : '';
-  // One-click cut affordance: pulsing fuchsia glow + ring.
-  const cutCls = cuttable ? 'ring-2 ring-fuchsia-400 shadow-[0_0_16px_rgba(232,121,249,0.85)] animate-pulse' : '';
+  // One-click cut/chain affordance: pulsing ring + glow. Chain (rank-only,
+  // previous player) lights up emerald to differentiate from a true Ultimate
+  // cut (rank+suit) which stays fuchsia.
+  const cutCls = chainable
+    ? 'ring-2 ring-emerald-400 shadow-[0_0_16px_rgba(52,211,153,0.85)] animate-pulse'
+    : cuttable
+      ? 'ring-2 ring-fuchsia-400 shadow-[0_0_16px_rgba(232,121,249,0.85)] animate-pulse'
+      : '';
   const base = `relative ${w} rounded-md border shadow-sm flex flex-col items-center justify-center select-none transition-all duration-150 ${hoverCls} ${cutCls}`;
   if (hidden || !card) {
     return (
@@ -391,9 +432,11 @@ function HandStack({ count }: { count: number }) {
   );
 }
 
-function PlayerArea({ player, isCurrent, isViewer, compact, faceDownClickable, onFaceDownClick, emotes,
+function PlayerArea({ player, isCurrent, isViewer, isSpectatorFocus, onSpectatorFocus, compact, faceDownClickable, onFaceDownClick, emotes,
   faceUpClickable, onFaceUpClick, selectedFaceUpIds, turnElapsedMs, recentlyActed }: {
   player: Player; isCurrent: boolean; isViewer: boolean; compact?: boolean;
+  isSpectatorFocus?: boolean;                        // spectator has this player camera-focused
+  onSpectatorFocus?: () => void;                     // click handler for spectators only
   faceDownClickable?: boolean; onFaceDownClick?: (id: string) => void;
   faceUpClickable?: boolean; onFaceUpClick?: (id: string) => void;
   selectedFaceUpIds?: Set<string>;
@@ -405,7 +448,17 @@ function PlayerArea({ player, isCurrent, isViewer, compact, faceDownClickable, o
   // Compact mode: tighter padding, smaller text, face-up + face-down rendered side-by-side
   // in a single row so the tile stays short enough to fit around the table on mobile.
   return (
-    <div className={`relative ${compact ? 'p-1.5' : 'p-2 sm:p-3'} rounded-lg border-2 ${isCurrent ? `${c.border} ${c.bg} ring-2 ${c.ring}` : 'border-gray-300 bg-white/85'} ${recentlyActed ? 'player-acted-pulse' : ''} flex flex-col ${compact ? 'gap-1' : 'gap-2'} min-w-0`}>
+    <div
+      onClick={onSpectatorFocus}
+      role={onSpectatorFocus ? 'button' : undefined}
+      aria-pressed={onSpectatorFocus ? isSpectatorFocus : undefined}
+      className={`relative ${compact ? 'p-1.5' : 'p-2 sm:p-3'} rounded-lg border-2 ${
+        isSpectatorFocus
+          ? 'border-violet-400 bg-violet-50 ring-2 ring-violet-400 shadow-[0_0_18px_rgba(167,139,250,0.45)]'
+          : isCurrent
+            ? `${c.border} ${c.bg} ring-2 ${c.ring}`
+            : 'border-gray-300 bg-white/85'
+      } ${recentlyActed ? 'player-acted-pulse' : ''} ${onSpectatorFocus ? 'cursor-pointer hover:ring-2 hover:ring-violet-300 transition-shadow' : ''} flex flex-col ${compact ? 'gap-1' : 'gap-2'} min-w-0`}>
       {/* Turn-speed indicator: appears above the current player's tile after 15s of thinking,
           fills toward the 30s server-side auto-pickup cutoff. */}
       {isCurrent && typeof turnElapsedMs === 'number' && turnElapsedMs > 15000 && (
@@ -673,11 +726,17 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
           const angle = baseAngle * Math.PI / 180;
           const targetX = 50 + Math.cos(angle) * rx * 100;
           const targetY = 50 + Math.sin(angle) * ry * 100;
+          // Big pickups feel heavier: longer flight, slightly larger stagger,
+          // and we show more card-backs (capped at 18 — past that they blur).
+          const big = pickupAnim.count >= 10;
+          const huge = pickupAnim.count >= 20;
+          const flightDur = huge ? 0.85 : big ? 0.7 : 0.55;
+          const stagger = huge ? 0.04 : big ? 0.032 : 0.025;
           return Array.from({ length: pickupAnim.count }).map((_, i) => {
             // Stagger and slight angular jitter so the cards "fan out" mid-flight
             // instead of stacking like a single sprite.
             const jitter = (i - pickupAnim.count / 2) * 1.2;
-            const delay = i * 0.025;
+            const delay = i * stagger;
             return (
               <motion.div
                 key={`pickup-${pickupAnim.key}-${i}`}
@@ -690,7 +749,7 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
                   opacity: 0,
                   rotate: jitter * 2,
                 }}
-                transition={{ duration: 0.55, delay, ease: [0.4, 0.0, 0.2, 1] }}
+                transition={{ duration: flightDur, delay, ease: [0.4, 0.0, 0.2, 1] }}
                 className="absolute pointer-events-none w-10 h-14 sm:w-12 sm:h-16 rounded-md bg-indigo-600 border border-indigo-800 shadow-lg flex items-center justify-center text-[10px] font-black tracking-widest text-white/85"
                 style={{ zIndex: 30 }}
                 aria-hidden
@@ -965,7 +1024,7 @@ function ToastStack({ toasts }: { toasts: Toast[] }) {
 
 /* ============== Status bar ============== */
 
-function StatusBar({ state, viewerId, isMyTurn }: { state: GameState; viewerId: number | null; isMyTurn: boolean }) {
+function StatusBar({ state, viewerId, isMyTurn, spectatorCount }: { state: GameState; viewerId: number | null; isMyTurn: boolean; spectatorCount?: number }) {
   const p = state.players[state.current];
   const c = p ? colorFor(p.id) : null;
   return (
@@ -979,6 +1038,17 @@ function StatusBar({ state, viewerId, isMyTurn }: { state: GameState; viewerId: 
       <span>{state.direction === 1 ? '↻' : '↺'}</span>
       {state.sevenRestriction && <span className="px-2 py-0.5 bg-rose-100 text-rose-700 rounded">7-or-lower</span>}
       {state.lastWasMine && <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded">bonus</span>}
+      {/* "👁 N watching" pip — shown to active players when at least one spectator
+          is connected. Auto-hides when nobody's watching to keep the bar clean. */}
+      {spectatorCount !== undefined && spectatorCount > 0 && (
+        <span
+          className="ml-auto px-2 py-0.5 rounded-full bg-violet-100 text-violet-800 border border-violet-300 font-semibold flex items-center gap-1"
+          title={`${spectatorCount} spectator${spectatorCount === 1 ? '' : 's'} watching`}
+        >
+          <span aria-hidden>👁</span>
+          {spectatorCount}
+        </span>
+      )}
     </div>
   );
 }
@@ -1401,28 +1471,763 @@ function HowToPlay() {
   );
 }
 
-function MenuScreen({ onLocal, onNetwork, prefilledCode }: { onLocal: () => void; onNetwork: (code?: string) => void; prefilledCode?: string }) {
-  const stats = loadStats();
-  const name = loadName();
-  const winRate = stats.games > 0 ? Math.round((stats.wins / stats.games) * 100) : 0;
+/* ============== Leaderboard ============== */
+
+type LbScope = 'all' | 'online' | 'local';
+
+function LeaderboardScreen({ onBack, auth }: { onBack: () => void; auth: AuthState }) {
+  const [rows, setRows] = useState<LeaderboardRow[] | null>(null);
+  const [scope, setScope] = useState<LbScope>('all');
+  const [loading, setLoading] = useState(true);
+
+  // Fetch on mount. Re-fetching on scope change isn't necessary — the RPC
+  // returns all three columns and we just re-rank locally — saves round-trips.
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetchLeaderboard(50).then(r => {
+      if (cancelled) return;
+      setRows(r);
+      setLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Re-rank by the active scope's wins. Players with zero games in the
+  // selected scope are filtered out so the "Online" tab doesn't look padded
+  // by guests-against-AI streaks.
+  const ranked = useMemo(() => {
+    if (!rows) return [];
+    const pickWins   = scope === 'online' ? (r: LeaderboardRow) => r.online_wins   : scope === 'local' ? (r: LeaderboardRow) => r.local_wins   : (r: LeaderboardRow) => r.wins;
+    const pickGames  = scope === 'online' ? (r: LeaderboardRow) => r.online_games  : scope === 'local' ? (r: LeaderboardRow) => r.local_games  : (r: LeaderboardRow) => r.games;
+    const pickLosses = scope === 'online' ? (r: LeaderboardRow) => r.online_losses : scope === 'local' ? (r: LeaderboardRow) => r.local_losses : (r: LeaderboardRow) => r.losses;
+    return rows
+      .filter(r => pickGames(r) > 0)
+      .map(r => ({ row: r, wins: pickWins(r), games: pickGames(r), losses: pickLosses(r) }))
+      .sort((a, b) => b.wins - a.wins || b.games - a.games)
+      .slice(0, 25);
+  }, [rows, scope]);
+
+  // Highlight the signed-in user's row when it appears.
+  const myUsername = auth.profile?.username;
+
+  // Top-line metric callouts pulled across the full result set (not just the
+  // current scope) so the "best ever" headlines feel global, not slice-y.
+  const headline = useMemo(() => {
+    if (!rows || rows.length === 0) return null;
+    const mostWins = [...rows].sort((a, b) => b.wins - a.wins)[0];
+    const biggestPile = [...rows].sort((a, b) => b.largest_pile_ever - a.largest_pile_ever)[0];
+    const mostOnline = [...rows].filter(r => r.online_games > 0).sort((a, b) => b.online_wins - a.online_wins)[0] ?? null;
+    return { mostWins, biggestPile, mostOnline };
+  }, [rows]);
+
+  const tabBtn = (s: LbScope, label: string, emoji: string) => (
+    <button
+      type="button"
+      onClick={() => setScope(s)}
+      className={`flex-1 px-3 py-2 rounded-md text-sm font-semibold transition-colors flex items-center justify-center gap-1 ${
+        scope === s
+          ? 'bg-white text-gray-900 shadow-sm'
+          : 'text-gray-300 hover:text-white'
+      }`}
+      aria-pressed={scope === s}
+    ><span aria-hidden>{emoji}</span> {label}</button>
+  );
+
+  const medal = (pos: number) => pos === 0 ? '🥇' : pos === 1 ? '🥈' : pos === 2 ? '🥉' : `#${pos + 1}`;
+
+  return (
+    <div className="min-h-full p-6 sm:p-8 max-w-3xl mx-auto flex flex-col gap-5 text-white">
+      <div className="flex items-center gap-3">
+        <button onClick={onBack} className="text-sm px-3 py-1.5 bg-white/10 hover:bg-white/20 border border-white/20 rounded-full">← Menu</button>
+        <h1 className="text-2xl sm:text-3xl font-black tracking-tight drop-shadow">🏆 Leaderboard</h1>
+      </div>
+
+      {/* Headline cards — global "best in show" callouts independent of the
+          active tab so the most impressive numbers always greet the user. */}
+      {headline && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <HeadlineCard icon="👑" label="Most wins"     name={headline.mostWins?.username}    avatar={headline.mostWins?.avatar}    value={headline.mostWins ? `${headline.mostWins.wins} W` : '—'} />
+          <HeadlineCard icon="🌐" label="Online king"   name={headline.mostOnline?.username}  avatar={headline.mostOnline?.avatar}  value={headline.mostOnline ? `${headline.mostOnline.online_wins} W` : '—'} />
+          <HeadlineCard icon="🗑" label="Biggest pickup" name={headline.biggestPile?.username} avatar={headline.biggestPile?.avatar} value={headline.biggestPile ? `${headline.biggestPile.largest_pile_ever} cards` : '—'} />
+        </div>
+      )}
+
+      {/* Tabs */}
+      <div className="flex bg-slate-900/60 ring-1 ring-white/10 rounded-lg p-1">
+        {tabBtn('all', 'All', '🌍')}
+        {tabBtn('online', 'Online', '🌐')}
+        {tabBtn('local', 'Local', '🤖')}
+      </div>
+
+      {/* Table */}
+      <div className="bg-white/95 text-gray-900 rounded-xl shadow-xl overflow-hidden">
+        {loading ? (
+          <div className="p-8 text-center text-sm text-gray-500">Loading…</div>
+        ) : ranked.length === 0 ? (
+          <div className="p-8 text-center text-sm text-gray-500">
+            No games yet in this scope. {scope === 'online' && 'Play an online match to start the rankings!'}
+            {scope === 'local' && 'Play a local match vs AI to start the rankings!'}
+          </div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-[11px] text-gray-500 uppercase tracking-wide border-b border-gray-200">
+                <th className="text-left p-2 pl-4 w-12">#</th>
+                <th className="text-left p-2">Player</th>
+                <th className="p-2 text-right">Games</th>
+                <th className="p-2 text-right">Wins</th>
+                <th className="p-2 text-right">Losses</th>
+                <th className="p-2 text-right pr-4">Win %</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ranked.map((r, i) => {
+                const winRate = r.games > 0 ? Math.round((r.wins / r.games) * 100) : 0;
+                const me = !!myUsername && r.row.username === myUsername;
+                return (
+                  <tr
+                    key={r.row.username}
+                    className={`border-b border-gray-100 last:border-b-0 ${me ? 'bg-emerald-50' : ''}`}
+                  >
+                    <td className="p-2 pl-4 text-base">{medal(i)}</td>
+                    <td className="p-2">
+                      <div className="flex items-center gap-2 font-semibold">
+                        <Avatar avatar={r.row.avatar} name={r.row.username} size="sm" />
+                        <span className="truncate">{r.row.username}</span>
+                        {me && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-200 text-emerald-900 font-bold">you</span>}
+                      </div>
+                    </td>
+                    <td className="p-2 text-right tabular-nums text-gray-700">{r.games}</td>
+                    <td className="p-2 text-right tabular-nums font-bold text-emerald-700">{r.wins}</td>
+                    <td className="p-2 text-right tabular-nums text-rose-700">{r.losses}</td>
+                    <td className="p-2 pr-4 text-right tabular-nums text-gray-700">{winRate}%</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <p className="text-xs text-white/60 text-center">
+        Top 25 by wins in the selected scope. Sign in to appear on the board.
+      </p>
+    </div>
+  );
+}
+
+function HeadlineCard({ icon, label, name, value, avatar }: { icon: string; label: string; name?: string | null; value: string; avatar?: string | null }) {
+  return (
+    <div className="bg-white/15 backdrop-blur-sm border border-white/20 rounded-xl px-3 py-2.5 text-white flex items-center gap-2.5">
+      {name ? <Avatar avatar={avatar} name={name} size="md" /> : <div className="text-2xl" aria-hidden>{icon}</div>}
+      <div className="flex-1 min-w-0">
+        <div className="text-[10px] uppercase tracking-wider text-white/70 flex items-center gap-1">
+          <span aria-hidden>{icon}</span> {label}
+        </div>
+        <div className="text-sm font-bold truncate">{name ?? '—'}</div>
+        <div className="text-xs text-white/80">{value}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ============== Avatar ============== */
+
+// Reusable avatar pill — gradient background + emoji on top when an avatar
+// key is set, otherwise a clean letter on emerald gradient as the fallback.
+// Used on the profile header, leaderboard rows, anywhere a user's identity
+// appears.
+function Avatar({ avatar, name, size = 'md' }: { avatar?: string | null; name?: string | null; size?: 'sm' | 'md' | 'lg' | 'xl' }) {
+  const dims =
+    size === 'xl' ? 'w-20 h-20 text-4xl' :
+    size === 'lg' ? 'w-16 h-16 text-3xl' :
+    size === 'md' ? 'w-10 h-10 text-xl' :
+                    'w-7 h-7 text-base';
+  const def = avatarDef(avatar);
+  if (def) {
+    return (
+      <div
+        className={`${dims} rounded-full bg-gradient-to-br ${def.gradient} flex items-center justify-center shrink-0 shadow-inner ring-1 ring-white/30`}
+        aria-label={`avatar: ${def.key}`}
+      >
+        <span aria-hidden>{def.emoji}</span>
+      </div>
+    );
+  }
+  return (
+    <div
+      className={`${dims} rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 text-white font-black flex items-center justify-center shrink-0 shadow-inner ring-1 ring-white/30`}
+      aria-label="avatar"
+    >
+      {(name ?? '?').slice(0, 1).toUpperCase()}
+    </div>
+  );
+}
+
+// Picker grid modal — click an avatar to choose. Selected one gets a ring.
+function AvatarPicker({ current, onChoose, onClose }: { current: string | null | undefined; onChoose: (key: string | null) => void; onClose: () => void }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 bg-stone-900/65 backdrop-blur-sm flex items-center justify-center p-6"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ y: 12, opacity: 0, scale: 0.96 }}
+        animate={{ y: 0, opacity: 1, scale: 1 }}
+        exit={{ y: 12, opacity: 0, scale: 0.96 }}
+        transition={{ type: 'spring', stiffness: 280, damping: 26 }}
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-5 sm:p-6 flex flex-col gap-4"
+        onClick={e => e.stopPropagation()}
+        role="dialog"
+        aria-label="Choose your avatar"
+      >
+        <div>
+          <h3 className="text-xl font-bold mb-1">Choose your avatar</h3>
+          <p className="text-sm text-gray-600">Pick one — show off your style.</p>
+        </div>
+        <div className="grid grid-cols-4 sm:grid-cols-6 gap-2.5">
+          {/* Default / clear option */}
+          <button
+            onClick={() => onChoose(null)}
+            title="Default (initial)"
+            className={`relative w-14 h-14 rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 text-white font-black flex items-center justify-center text-2xl ${
+              current ? 'opacity-70 hover:opacity-100' : 'ring-4 ring-emerald-300'
+            } hover:scale-105 transition-transform`}
+            aria-pressed={!current}
+          >
+            A
+          </button>
+          {AVATARS.map(a => {
+            const sel = a.key === current;
+            return (
+              <button
+                key={a.key}
+                onClick={() => onChoose(a.key)}
+                title={a.key}
+                className={`relative w-14 h-14 rounded-full bg-gradient-to-br ${a.gradient} text-3xl flex items-center justify-center ${
+                  sel ? 'ring-4 ring-emerald-400 scale-105' : 'hover:scale-105'
+                } transition-transform shadow-inner`}
+                aria-pressed={sel}
+              >
+                <span aria-hidden>{a.emoji}</span>
+              </button>
+            );
+          })}
+        </div>
+        <button onClick={onClose} className="text-xs text-gray-500 hover:text-gray-800 self-center">Close</button>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+/* ============== Match replay (log-based) ============== */
+
+// Tag each log line with a tone so we can color-code the replay timeline.
+// Cheap regex match — same shape the in-game toast handler uses, just for
+// presentation rather than sound/haptic.
+type LogTone = 'play' | 'pickup' | 'burn' | 'reset' | 'reverse' | 'skip' | 'seven' | 'cut' | 'chain' | 'win' | 'flip' | 'info';
+function classifyLog(line: string): LogTone {
+  if (/POOP HEAD|is OUT/i.test(line))                return 'win';
+  if (/Pile burned|Four of a kind/i.test(line))      return 'burn';
+  if (/picked up|Picks up/i.test(line))              return 'pickup';
+  if (/pile reset/i.test(line))                      return 'reset';
+  if (/direction reversed/i.test(line))              return 'reverse';
+  if (/skipped/i.test(line))                         return 'skip';
+  if (/7-or-lower/i.test(line))                      return 'seven';
+  if (/CUT with/i.test(line))                        return 'cut';
+  if (/chained/i.test(line))                         return 'chain';
+  if (/flipped/i.test(line))                         return 'flip';
+  if (/played/i.test(line))                          return 'play';
+  return 'info';
+}
+
+const LOG_TONE_CLASS: Record<LogTone, string> = {
+  play:    'bg-white text-gray-900 border-gray-200',
+  pickup:  'bg-amber-50 text-amber-900 border-amber-300',
+  burn:    'bg-rose-50 text-rose-900 border-rose-300',
+  reset:   'bg-sky-50 text-sky-900 border-sky-300',
+  reverse: 'bg-violet-50 text-violet-900 border-violet-300',
+  skip:    'bg-amber-50 text-amber-900 border-amber-300',
+  seven:   'bg-pink-50 text-pink-900 border-pink-300',
+  cut:     'bg-fuchsia-50 text-fuchsia-900 border-fuchsia-300',
+  chain:   'bg-emerald-50 text-emerald-900 border-emerald-300',
+  win:     'bg-emerald-100 text-emerald-900 border-emerald-400 font-bold',
+  flip:    'bg-indigo-50 text-indigo-900 border-indigo-300',
+  info:    'bg-gray-50 text-gray-700 border-gray-200',
+};
+const LOG_TONE_ICON: Record<LogTone, string> = {
+  play: '🃏', pickup: '📥', burn: '🔥', reset: '🔄', reverse: '↺', skip: '⏭',
+  seven: '🔒', cut: '✂', chain: '↪', win: '🏆', flip: '🔍', info: '·',
+};
+
+function ReplayModal({ match, onClose }: { match: MatchHistoryRow; onClose: () => void }) {
+  const lines = match.game_log ?? [];
+  const won = match.finish_pos === 1;
+  const lost = match.was_poop_head;
+  const date = new Date(match.played_at);
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 bg-stone-900/65 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ y: 12, opacity: 0, scale: 0.96 }}
+        animate={{ y: 0, opacity: 1, scale: 1 }}
+        exit={{ y: 12, opacity: 0, scale: 0.96 }}
+        transition={{ type: 'spring', stiffness: 280, damping: 26 }}
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[85vh] flex flex-col overflow-hidden"
+        onClick={e => e.stopPropagation()}
+        role="dialog"
+        aria-label="Match replay"
+      >
+        <div className="px-5 py-4 border-b border-gray-200 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-2xl" aria-hidden>{won ? '🏆' : lost ? '💩' : '🃏'}</span>
+              <h3 className="text-lg font-bold truncate">
+                {match.mode === 'ultimate' ? 'Ultimate' : 'Classic'} · {match.online ? 'Online' : 'vs AI'}
+              </h3>
+            </div>
+            <div className="text-xs text-gray-500">
+              {date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+              {' · '}{match.player_count} players{match.ai_count > 0 ? ` (${match.ai_count} AI)` : ''}
+            </div>
+            <div className={`mt-1 inline-block text-xs font-bold px-2 py-0.5 rounded-full ${
+              won ? 'bg-emerald-100 text-emerald-800'
+              : lost ? 'bg-rose-100 text-rose-800'
+              : 'bg-gray-100 text-gray-700'
+            }`}>
+              {won ? 'WON' : lost ? 'POOP HEAD' : `Finished #${match.finish_pos ?? '?'}`}
+            </div>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-xl leading-none">×</button>
+        </div>
+
+        {/* Per-match stats row */}
+        <div className="px-5 py-3 grid grid-cols-3 sm:grid-cols-5 gap-2 border-b border-gray-100 bg-gray-50">
+          <ReplayStat label="Played"   value={match.cards_played} />
+          <ReplayStat label="Pickups"  value={match.pickups} />
+          <ReplayStat label="Burns"    value={match.burns} />
+          <ReplayStat label="Power"    value={match.power_cards} />
+          <ReplayStat label="Biggest"  value={match.largest_pile} />
+        </div>
+
+        {/* Log timeline */}
+        <div className="flex-1 overflow-y-auto px-5 py-3">
+          {lines.length === 0 ? (
+            <div className="py-8 text-center text-sm text-gray-500">
+              No play-by-play recorded for this match.
+            </div>
+          ) : (
+            <ol className="flex flex-col gap-1.5">
+              {lines.map((line, i) => {
+                const tone = classifyLog(line);
+                return (
+                  <li
+                    key={i}
+                    className={`text-xs leading-snug px-2.5 py-1.5 rounded-md border flex items-start gap-2 ${LOG_TONE_CLASS[tone]}`}
+                  >
+                    <span aria-hidden className="text-base leading-none shrink-0 mt-px">{LOG_TONE_ICON[tone]}</span>
+                    <span className="flex-1">{line}</span>
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </div>
+
+        <div className="px-5 py-3 border-t border-gray-200 text-center">
+          <button onClick={onClose} className="text-sm text-gray-600 hover:text-gray-900">Close</button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function ReplayStat({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="text-center">
+      <div className="text-[10px] uppercase tracking-wider text-gray-500 font-bold">{label}</div>
+      <div className="text-base font-bold tabular-nums text-gray-900">{value}</div>
+    </div>
+  );
+}
+
+/* ============== Profile ============== */
+
+function ProfileScreen({ auth, onBack }: { auth: AuthState; onBack: () => void }) {
+  const [matches, setMatches] = useState<MatchHistoryRow[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchRecentMatches(20).then(rows => { if (!cancelled) setMatches(rows); });
+    auth.refreshStats();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Click a recent match row to open the play-by-play replay modal.
+  const [replayMatch, setReplayMatch] = useState<MatchHistoryRow | null>(null);
+
+  // Avatar picker — opens a grid modal; choose one (or null for default)
+  // and persist via the RPC. Stats refresh re-renders the header.
+  const [avatarOpen, setAvatarOpen] = useState(false);
+  const onPickAvatar = async (key: string | null) => {
+    setAvatarOpen(false);
+    await updateAvatar(key);
+    auth.refreshStats();
+  };
+
+  // Edit username — controlled inline. Server enforces format + uniqueness;
+  // a successful save bumps the local profile so the header re-renders.
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(auth.profile?.username ?? '');
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => { if (!editing) setDraft(auth.profile?.username ?? ''); }, [auth.profile?.username, editing]);
+  const saveUsername = async () => {
+    if (saving) return;
+    setSaving(true); setErr(null);
+    const r = await updateUsername(draft);
+    setSaving(false);
+    if (!r.ok) { setErr(r.error); return; }
+    setEditing(false);
+    // The auth hook listens for auth changes, not profile updates, so we
+    // optimistically refresh profile via getSession's downstream loader by
+    // calling refreshStats (which triggers loadAll). Easiest path.
+    auth.refreshStats();
+  };
+
+  const stats = auth.stats;
+  const sess = auth.session;
+  const profile = auth.profile;
+  if (!sess?.user) {
+    return (
+      <div className="min-h-full p-6 flex flex-col items-center justify-center gap-4 text-white">
+        <div className="text-lg">Sign in to see your profile.</div>
+        <button onClick={onBack} className="text-sm px-3 py-1.5 bg-white/15 hover:bg-white/25 border border-white/25 rounded-full">← Menu</button>
+      </div>
+    );
+  }
+
+  // Streak: count consecutive wins from the most recent match backward.
+  const streak = (() => {
+    if (!matches) return 0;
+    let n = 0;
+    for (const m of matches) {
+      if (m.finish_pos === 1) n++;
+      else break;
+    }
+    return n;
+  })();
+
+  // Per-mode breakdown derived from match history (source of truth: match
+  // rows we already pulled). Falls back to zero buckets pre-load.
+  const modeBreakdown = (() => {
+    const init = { classic: { w: 0, l: 0, g: 0 }, ultimate: { w: 0, l: 0, g: 0 } };
+    if (!matches) return init;
+    for (const m of matches) {
+      const b = init[m.mode];
+      b.g += 1;
+      if (m.finish_pos === 1) b.w += 1;
+      else if (m.was_poop_head) b.l += 1;
+    }
+    return init;
+  })();
+
+  const winRate = stats && stats.games_played > 0
+    ? Math.round((stats.wins / stats.games_played) * 100)
+    : 0;
+
+  const memberSince = profile?.created_at
+    ? new Date(profile.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short' })
+    : null;
+
+  return (
+    <div className="min-h-full p-6 sm:p-8 max-w-3xl mx-auto flex flex-col gap-5 text-white">
+      <div className="flex items-center gap-3">
+        <button onClick={onBack} className="text-sm px-3 py-1.5 bg-white/10 hover:bg-white/20 border border-white/20 rounded-full">← Menu</button>
+        <h1 className="text-2xl sm:text-3xl font-black tracking-tight drop-shadow">Your profile</h1>
+      </div>
+
+      {/* Header card — username (editable), email, member since, streak */}
+      <div className="bg-white/95 text-gray-900 rounded-2xl shadow-xl p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center gap-4">
+        <button
+          onClick={() => setAvatarOpen(true)}
+          aria-label="Change avatar"
+          className="relative shrink-0 group"
+        >
+          <Avatar avatar={profile?.avatar} name={profile?.username} size="lg" />
+          <span className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-white text-gray-700 text-xs flex items-center justify-center shadow ring-2 ring-white group-hover:bg-emerald-500 group-hover:text-white transition-colors">✏</span>
+        </button>
+        <div className="flex-1 min-w-0">
+          {editing ? (
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center gap-2">
+                <input
+                  autoFocus
+                  value={draft}
+                  onChange={e => setDraft(e.target.value)}
+                  maxLength={USERNAME_MAX}
+                  className="px-2.5 py-1 border border-gray-300 rounded text-base font-bold w-44"
+                />
+                <button
+                  onClick={saveUsername}
+                  disabled={saving}
+                  className={`px-3 py-1 rounded text-xs font-semibold ${saving ? 'bg-gray-200 text-gray-500' : 'bg-emerald-500 hover:bg-emerald-600 text-white'}`}
+                >Save</button>
+                <button
+                  onClick={() => { setEditing(false); setErr(null); }}
+                  className="px-3 py-1 rounded text-xs font-semibold bg-gray-100 text-gray-700 hover:bg-gray-200"
+                >Cancel</button>
+              </div>
+              {err && <div className="text-xs text-rose-700">{err}</div>}
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-2xl font-black truncate">{profile?.username ?? 'Unnamed'}</h2>
+              <button
+                onClick={() => setEditing(true)}
+                className="text-xs px-2 py-0.5 rounded-full border border-gray-300 text-gray-600 hover:bg-gray-50"
+              >Edit</button>
+            </div>
+          )}
+          <div className="text-sm text-gray-500 truncate">{sess.user.email}</div>
+          {memberSince && <div className="text-xs text-gray-400 mt-0.5">Member since {memberSince}</div>}
+        </div>
+        {streak >= 2 && (
+          <div className="px-3 py-2 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-center shrink-0">
+            <div className="text-[10px] uppercase tracking-wider font-bold">🔥 Streak</div>
+            <div className="text-xl font-black tabular-nums">{streak}W</div>
+          </div>
+        )}
+      </div>
+
+      {/* Hero metrics */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <HeroStat label="Wins" value={stats?.wins ?? 0} tone="emerald" />
+        <HeroStat label="Losses" value={stats?.losses ?? 0} tone="rose" />
+        <HeroStat label="Win rate" value={`${winRate}%`} tone="amber" />
+        <HeroStat label="Games" value={stats?.games_played ?? 0} tone="slate" />
+      </div>
+
+      {/* Online vs local strip + mode breakdown — quick visual segmentation */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <BreakdownCard
+          icon="🌐"
+          label="Online"
+          games={stats?.online_games ?? 0}
+          wins={(stats?.online_games ?? 0) === 0 ? 0 : matches?.filter(m => m.online && m.finish_pos === 1).length ?? 0}
+        />
+        <BreakdownCard
+          icon="🤖"
+          label="Local (vs AI)"
+          games={(stats?.games_played ?? 0) - (stats?.online_games ?? 0)}
+          wins={matches?.filter(m => !m.online && m.finish_pos === 1).length ?? 0}
+        />
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        <ModeStrip label="Classic" {...modeBreakdown.classic} />
+        <ModeStrip label="Ultimate" {...modeBreakdown.ultimate} />
+        <ModeStrip label="Total" w={(stats?.wins ?? 0)} l={(stats?.losses ?? 0)} g={(stats?.games_played ?? 0)} />
+      </div>
+
+      {/* Detailed stat grid */}
+      <div className="bg-white/95 text-gray-900 rounded-xl shadow-lg p-4 grid grid-cols-2 sm:grid-cols-3 gap-3">
+        <DetailStat icon="📥" label="Pile pickups"  value={stats?.pickups ?? 0} />
+        <DetailStat icon="🗑" label="Biggest pickup" value={stats?.largest_pile_ever ?? 0} suffix=" cards" />
+        <DetailStat icon="🃏" label="Cards played"  value={stats?.cards_played ?? 0} />
+        <DetailStat icon="⚡" label="Power cards"   value={stats?.power_cards ?? 0} />
+        <DetailStat icon="🔥" label="Burns triggered" value={stats?.burns ?? 0} />
+        <DetailStat icon="✂"  label="Cuts"           value={stats?.cuts ?? 0} />
+      </div>
+
+      {/* Recent matches */}
+      <div className="bg-white/95 text-gray-900 rounded-xl shadow-lg overflow-hidden">
+        <div className="px-4 py-3 text-sm font-bold border-b border-gray-200">Recent matches</div>
+        {matches === null ? (
+          <div className="p-6 text-center text-sm text-gray-500">Loading…</div>
+        ) : matches.length === 0 ? (
+          <div className="p-6 text-center text-sm text-gray-500">No matches yet — go play one!</div>
+        ) : (
+          <ul className="divide-y divide-gray-100">
+            {matches.map(m => {
+              const won = m.finish_pos === 1;
+              const lost = m.was_poop_head;
+              const date = new Date(m.played_at);
+              const when = date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+              const hasReplay = (m.game_log?.length ?? 0) > 0;
+              return (
+                <li key={m.id}>
+                  <button
+                    type="button"
+                    onClick={() => setReplayMatch(m)}
+                    disabled={!hasReplay}
+                    className={`w-full px-4 py-2.5 flex items-center justify-between text-sm text-left transition-colors ${hasReplay ? 'hover:bg-gray-50 cursor-pointer' : 'cursor-default'}`}
+                    aria-label={hasReplay ? 'View replay' : 'No replay available'}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span aria-hidden className="text-base">
+                        {won ? '🏆' : lost ? '💩' : '·'}
+                      </span>
+                      <div className="flex flex-col min-w-0">
+                        <div className="font-semibold truncate flex items-center gap-1.5">
+                          <span>{m.mode === 'ultimate' ? 'Ultimate' : 'Classic'}</span>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600">{m.online ? '🌐 online' : '🤖 vs AI'}</span>
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          {m.player_count} players{m.ai_count > 0 ? ` (${m.ai_count} AI)` : ''} · {when}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 whitespace-nowrap">
+                      <span className={`text-xs font-bold ${won ? 'text-emerald-700' : lost ? 'text-rose-700' : 'text-gray-500'}`}>
+                        {won ? 'WON' : lost ? 'POOP HEAD' : `#${m.finish_pos ?? '?'}`}
+                      </span>
+                      {hasReplay && <span aria-hidden className="text-gray-400">▶</span>}
+                    </div>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+
+      <AnimatePresence>
+        {avatarOpen && (
+          <AvatarPicker
+            current={profile?.avatar}
+            onChoose={onPickAvatar}
+            onClose={() => setAvatarOpen(false)}
+          />
+        )}
+        {replayMatch && (
+          <ReplayModal match={replayMatch} onClose={() => setReplayMatch(null)} />
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function HeroStat({ label, value, tone }: { label: string; value: number | string; tone: 'emerald' | 'rose' | 'amber' | 'slate' }) {
+  const palette = {
+    emerald: 'bg-emerald-50 text-emerald-900 border-emerald-200',
+    rose: 'bg-rose-50 text-rose-900 border-rose-200',
+    amber: 'bg-amber-50 text-amber-900 border-amber-200',
+    slate: 'bg-white/95 text-gray-900 border-gray-200',
+  }[tone];
+  return (
+    <div className={`rounded-xl border ${palette} p-3 text-center shadow-sm`}>
+      <div className="text-[10px] uppercase tracking-wider font-bold opacity-80">{label}</div>
+      <div className="text-2xl sm:text-3xl font-black tabular-nums">{value}</div>
+    </div>
+  );
+}
+
+function BreakdownCard({ icon, label, games, wins }: { icon: string; label: string; games: number; wins: number }) {
+  const losses = Math.max(0, games - wins);
+  return (
+    <div className="bg-white/95 text-gray-900 rounded-xl shadow-sm p-3 flex items-center gap-3">
+      <div className="text-2xl" aria-hidden>{icon}</div>
+      <div className="flex-1">
+        <div className="text-xs uppercase tracking-wider font-bold text-gray-500">{label}</div>
+        <div className="text-sm font-bold tabular-nums">
+          {games} games · <span className="text-emerald-700">{wins}W</span> · <span className="text-rose-700">{losses}L</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ModeStrip({ label, w, l, g }: { label: string; w?: number; l?: number; g?: number }) {
+  return (
+    <div className="bg-white/15 backdrop-blur-sm border border-white/20 rounded-xl p-2.5 text-white text-center">
+      <div className="text-[10px] uppercase tracking-wider opacity-80">{label}</div>
+      <div className="font-bold tabular-nums text-sm">
+        <span className="text-emerald-300">{w ?? 0}W</span> · <span className="text-rose-300">{l ?? 0}L</span> · <span className="opacity-80">{g ?? 0}G</span>
+      </div>
+    </div>
+  );
+}
+
+function DetailStat({ icon, label, value, suffix }: { icon: string; label: string; value: number; suffix?: string }) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className="text-xl" aria-hidden>{icon}</div>
+      <div>
+        <div className="text-[10px] uppercase tracking-wider font-bold text-gray-500">{label}</div>
+        <div className="text-base font-bold tabular-nums">{value}{suffix}</div>
+      </div>
+    </div>
+  );
+}
+
+function MenuScreen({ onLocal, onNetwork, onLeaderboard, onProfile, prefilledCode, auth }: { onLocal: () => void; onNetwork: (code?: string) => void; onLeaderboard: () => void; onProfile: () => void; prefilledCode?: string; auth: AuthState }) {
+  const localStatsLS = loadStats();
+  const localName = loadName();
+  const [signInOpen, setSignInOpen] = useState(false);
+  // Stored online session — if present, the user was last in a real room.
+  // The RESUME flow on the server will reject stale tokens, so we offer a
+  // "Resume" CTA but also a way to dismiss it.
+  const [resumable, setResumable] = useState(() => loadSession());
+  // Prefer cloud stats when signed in (cross-device truth); fall back to
+  // localStorage for guests so they see something instead of zeros.
+  const signedIn = !!auth.session?.user;
+  const cs: SupabaseStats | null = signedIn ? auth.stats : null;
+  const wins   = cs ? cs.wins   : localStatsLS.wins;
+  const losses = cs ? cs.losses : localStatsLS.losses;
+  const games  = cs ? cs.games_played : localStatsLS.games;
+  const onlineGames = cs?.online_games ?? null;
+  const winRate = games > 0 ? Math.round((wins / games) * 100) : 0;
+  const displayName = signedIn ? (auth.profile?.username ?? auth.session?.user?.email ?? 'Signed in') : localName;
   return (
     <div className="min-h-full flex flex-col items-center justify-center gap-5 p-6">
       <h1 className="text-4xl sm:text-5xl font-black tracking-tight text-white drop-shadow-md">💩 Latrine</h1>
       <p className="max-w-xl text-center text-white/85 text-sm sm:text-base">
         A shedding card game. Get rid of all your cards. Last one holding cards is the Poop Head 💩.
       </p>
-      {(name || stats.games > 0) && (
+      {(displayName || games > 0) && (
         <div className="flex items-center gap-3 text-xs sm:text-sm bg-white/15 backdrop-blur-sm border border-white/25 rounded-full px-4 py-1.5 text-white/95">
-          {name && <span>👋 <strong>{name}</strong></span>}
-          {stats.games > 0 && (
+          {displayName && (
+            <span className="flex items-center gap-1.5">
+              {signedIn && <Avatar avatar={auth.profile?.avatar} name={auth.profile?.username} size="sm" />}
+              <strong>{displayName}</strong>
+            </span>
+          )}
+          {games > 0 && (
             <>
               <span className="text-white/50">•</span>
-              <span>🏆 <strong>{stats.wins}</strong>W / <strong>{stats.losses}</strong>L</span>
-              <span className="text-white/60">({winRate}% win, {stats.games} played)</span>
+              <span>🏆 <strong>{wins}</strong>W / <strong>{losses}</strong>L</span>
+              <span className="text-white/60">({winRate}%, {games} played{onlineGames ? `, ${onlineGames} online` : ''})</span>
             </>
           )}
         </div>
       )}
+      {/* Resume CTA — shown when the local session token points at a real
+          room. Clicking enters the network mode, which RESUMEs automatically
+          via the same stored token. If the room has actually expired, the
+          user lands in the lobby with a "Room not found" error. */}
+      {resumable && !resumable.spectator && !prefilledCode && (
+        <div className="flex flex-col items-center gap-2 bg-white/15 backdrop-blur-sm border border-emerald-300/40 rounded-2xl px-5 py-3 text-white">
+          <span className="text-sm">⏯ You were in room <strong>{resumable.code}</strong>.</span>
+          <div className="flex gap-2">
+            <button
+              onClick={() => onNetwork(resumable.code)}
+              className="px-4 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-white font-semibold rounded-lg shadow text-sm"
+            >Resume</button>
+            <button
+              onClick={() => { clearSession(); setResumable(null); }}
+              className="px-4 py-1.5 bg-white/15 hover:bg-white/25 text-white rounded-lg text-sm"
+            >Dismiss</button>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-col sm:flex-row gap-3">
         <button onClick={onLocal} className="px-6 py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-lg shadow">
           Local play (with AI option)
@@ -1431,8 +2236,218 @@ function MenuScreen({ onLocal, onNetwork, prefilledCode }: { onLocal: () => void
           {prefilledCode ? `Join room ${prefilledCode}` : 'Online multiplayer'}
         </button>
       </div>
+
+      {/* Secondary nav — leaderboard always available, profile only when
+          signed in (it's user-specific). Both sit below the play buttons so
+          they don't compete with the primary action. */}
+      {supabaseEnabled && (
+        <div className="flex flex-wrap gap-2 justify-center">
+          <button
+            onClick={onLeaderboard}
+            className="text-sm px-4 py-2 bg-white/10 hover:bg-white/20 backdrop-blur-sm border border-white/25 rounded-full text-white flex items-center gap-1.5"
+          >
+            <span aria-hidden>🏆</span> Leaderboard
+          </button>
+          {signedIn && (
+            <button
+              onClick={onProfile}
+              className="text-sm px-4 py-2 bg-white/10 hover:bg-white/20 backdrop-blur-sm border border-white/25 rounded-full text-white flex items-center gap-1.5"
+            >
+              <span aria-hidden>👤</span> Your profile
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Auth strip — sign-in CTA for guests, sign-out + email pip when signed in.
+          Hidden entirely if Supabase isn't configured (env vars missing). */}
+      {supabaseEnabled && auth.ready && (
+        signedIn ? (
+          <div className="flex items-center gap-2 text-xs text-white/85">
+            <span>{auth.session?.user?.email}</span>
+            <button onClick={() => auth.signOut()} className="underline hover:text-white">sign out</button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 text-xs text-white/85">
+            <span className="opacity-80">Playing as guest — stats save locally only.</span>
+            <button
+              onClick={() => setSignInOpen(true)}
+              className="underline hover:text-white font-semibold"
+            >Sign in to save across devices</button>
+          </div>
+        )
+      )}
+
       <HowToPlay />
+
+      <AnimatePresence>
+        {signInOpen && (
+          <SignInModal auth={auth} onClose={() => setSignInOpen(false)} />
+        )}
+      </AnimatePresence>
     </div>
+  );
+}
+
+// Magic-link sign-in / sign-up modal. Two tabs:
+//   • Sign in — email only. Returning users skip the username step entirely.
+//   • Sign up — email + username. Username is validated client-side for
+//     format and (debounced) checked against the server for availability
+//     before the form will submit.
+// On submit, both tabs use signInWithOtp; the difference is whether we
+// pass `username` in user_metadata (only first-time signup uses it).
+type AuthMode = 'signin' | 'signup';
+function SignInModal({ auth, onClose }: { auth: AuthState; onClose: () => void }) {
+  const [mode, setMode] = useState<AuthMode>('signin');
+  const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Username availability — null = unchecked, true = available, false = taken,
+  // 'invalid' = format failure. Debounced 350ms after the last keystroke so we
+  // don't hammer the RPC.
+  const [available, setAvailable] = useState<null | true | false | 'invalid' | 'checking'>(null);
+  useEffect(() => {
+    if (mode !== 'signup') return;
+    const u = username.trim();
+    if (!u) { setAvailable(null); return; }
+    if (u.length < USERNAME_MIN || u.length > USERNAME_MAX || !USERNAME_RE.test(u)) {
+      setAvailable('invalid');
+      return;
+    }
+    setAvailable('checking');
+    const t = setTimeout(async () => {
+      const ok = await checkUsernameAvailable(u);
+      setAvailable(ok === null ? null : ok ? true : false);
+    }, 350);
+    return () => clearTimeout(t);
+  }, [username, mode]);
+
+  const usernameOk = mode === 'signin' || available === true;
+  const canSubmit = !!email.trim() && !busy && (mode === 'signin' || usernameOk);
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canSubmit) return;
+    setBusy(true); setError(null);
+    const r = await auth.signInWithEmail(
+      email.trim(),
+      mode === 'signup' ? { username: username.trim() } : undefined,
+    );
+    setBusy(false);
+    if (r.ok) setSent(true);
+    else setError(r.error);
+  };
+
+  const tabBtn = (m: AuthMode, label: string) => (
+    <button
+      type="button"
+      onClick={() => { setMode(m); setError(null); }}
+      className={`flex-1 px-3 py-2 rounded-md text-sm font-semibold transition-colors ${
+        mode === m
+          ? 'bg-white text-gray-900 shadow-sm'
+          : 'text-gray-500 hover:text-gray-800'
+      }`}
+      aria-pressed={mode === m}
+    >{label}</button>
+  );
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 bg-stone-900/65 backdrop-blur-sm flex items-center justify-center p-6"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ y: 12, opacity: 0, scale: 0.96 }}
+        animate={{ y: 0, opacity: 1, scale: 1 }}
+        exit={{ y: 12, opacity: 0, scale: 0.96 }}
+        transition={{ type: 'spring', stiffness: 280, damping: 26 }}
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 flex flex-col gap-4"
+        onClick={e => e.stopPropagation()}
+        role="dialog"
+        aria-label={mode === 'signin' ? 'Sign in' : 'Create account'}
+      >
+        <div>
+          <h3 className="text-xl font-bold mb-1">
+            {mode === 'signin' ? 'Sign in' : 'Create account'}
+          </h3>
+          <p className="text-sm text-gray-600">
+            {mode === 'signin'
+              ? 'Enter your email — we\'ll send a one-tap link. No password to remember.'
+              : 'Pick a username and enter your email. We\'ll send a one-tap link to confirm.'}
+          </p>
+        </div>
+
+        {/* Tab toggle — segmented control */}
+        <div className="flex bg-gray-100 rounded-lg p-1">
+          {tabBtn('signin', 'Sign in')}
+          {tabBtn('signup', 'Create account')}
+        </div>
+
+        {sent ? (
+          <div className="rounded-lg bg-emerald-50 border border-emerald-200 p-3 text-sm text-emerald-900">
+            ✉️ Check your inbox at <strong>{email}</strong>. Click the link to finish — you can close this tab.
+          </div>
+        ) : (
+          <form onSubmit={onSubmit} className="flex flex-col gap-3">
+            {mode === 'signup' && (
+              <div className="flex flex-col gap-1">
+                <input
+                  autoFocus
+                  value={username}
+                  onChange={e => setUsername(e.target.value)}
+                  placeholder="Username"
+                  required
+                  minLength={USERNAME_MIN}
+                  maxLength={USERNAME_MAX}
+                  className={`px-3 py-2 border rounded text-sm ${
+                    available === false || available === 'invalid'
+                      ? 'border-rose-400 bg-rose-50'
+                      : available === true
+                        ? 'border-emerald-400 bg-emerald-50'
+                        : 'border-gray-300'
+                  }`}
+                />
+                <div className="text-[11px] h-4">
+                  {available === 'checking' && <span className="text-gray-500">Checking…</span>}
+                  {available === true && <span className="text-emerald-700">✓ Available</span>}
+                  {available === false && <span className="text-rose-700">Already taken</span>}
+                  {available === 'invalid' && (
+                    <span className="text-rose-700">
+                      {USERNAME_MIN}–{USERNAME_MAX} chars, letters / digits / _ / - only
+                    </span>
+                  )}
+                  {available === null && username.length === 0 && (
+                    <span className="text-gray-500">{USERNAME_MIN}–{USERNAME_MAX} chars, letters / digits / _ / -</span>
+                  )}
+                </div>
+              </div>
+            )}
+            <input
+              type="email"
+              autoFocus={mode === 'signin'}
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              placeholder="you@example.com"
+              required
+              className="px-3 py-2 border border-gray-300 rounded text-sm"
+            />
+            {error && <div className="text-xs text-rose-700">{error}</div>}
+            <button
+              type="submit"
+              disabled={!canSubmit}
+              className={`px-4 py-2 rounded font-semibold ${canSubmit ? 'bg-indigo-500 hover:bg-indigo-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
+            >
+              {busy ? 'Sending…' : mode === 'signin' ? 'Send magic link' : 'Create account & send link'}
+            </button>
+          </form>
+        )}
+        <button onClick={onClose} className="text-xs text-gray-500 hover:text-gray-800 self-center">Close</button>
+      </motion.div>
+    </motion.div>
   );
 }
 
@@ -1609,13 +2624,22 @@ function sortCards(cards: Card[]): Card[] {
   return cards.slice().sort((a, b) => RANK_VALUE[a.rank] - RANK_VALUE[b.rank] || a.suit.localeCompare(b.suit));
 }
 
-function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }: {
+function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat, fromDeckIds, spectatorCount }: {
   state: GameState; dispatch: (a: Action) => void; viewerId: number | null;
   emotes?: { id: string; playerId: number; emoji: string }[]; onEmote?: (e: string) => void;
+  chats?: ChatMsg[]; onChat?: (text: string) => void;
   fromDeckIds?: Set<string>;
+  spectatorCount?: number;
 }) {
   const isSpectator = viewerId === -1;
-  const viewer = isSpectator ? state.current : (viewerId ?? state.current);
+  // Spectators get to pick a "camera angle" — which player's hand they're
+  // following. Defaults to whoever's turn it is now (rotates with the game).
+  // Click any tile to focus that player. For real players this is just their
+  // own seat; the spectator state is decorative.
+  const [spectatorFocus, setSpectatorFocus] = useState<number | null>(null);
+  const viewer = isSpectator
+    ? (spectatorFocus !== null && state.players[spectatorFocus] ? spectatorFocus : state.current)
+    : (viewerId ?? state.current);
   const isMyTurn = !isSpectator && viewer === state.current && !state.players[viewer]?.isAi;
   const me = state.players[viewer];
   const src = me ? activeSource(me, state.deck.length === 0) : null;
@@ -1722,15 +2746,23 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
       const idx = state.players.findIndex(p => p.name === name);
       if (idx < 0) continue;
       pickupKeyRef.current += 1;
-      setPickupAnim({ key: pickupKeyRef.current, pickerId: idx, count: Math.min(prevPile || 1, 12) });
+      // Cap at 18 visible cards (was 12). Past that they blur into noise but
+      // 12 felt too small for the genuinely big pickups that actually happen
+      // (e.g. ~20-card pile after a no-burn streak).
+      setPickupAnim({ key: pickupKeyRef.current, pickerId: idx, count: Math.min(prevPile || 1, 18) });
       const t = setTimeout(() => setPickupAnim(null), 900);
       return () => clearTimeout(t);
     }
   }, [state.log, state.pile.length, state.players]);
 
-  // Ultimate mode: viewer can cut if they have cards matching the top of the pile.
-  const myCutMatches = !isSpectator && state.mode === 'ultimate' && me ? cutMatches(state, viewer) : [];
-  const canCut = myCutMatches.length > 0 && !isMyTurn; // cutting your own play is allowed but redundant — only show on others' turns
+  // Out-of-turn matches: includes both Ultimate cuts (rank+suit by anyone) and
+  // chains (rank-only, available to the player who just played, in any mode).
+  // cutMatches handles both flavors internally.
+  const myCutMatches = !isSpectator && me ? cutMatches(state, viewer) : [];
+  const canCut = myCutMatches.length > 0 && !isMyTurn;
+  // Chain == we are the most recent player. Used to label/colour the action
+  // appropriately (subtle visual difference from a true Ultimate cut).
+  const isChainOpportunity = canCut && state.lastPlayerId === viewer;
 
   // Cut-race feedback: if the viewer had cut matches in the previous state but
   // someone else got their cut in first, show a small "Beat to it!" pip so the
@@ -1757,8 +2789,25 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
 
   const sourceCards = me && src ? cardsFromSource(me, src) : [];
   const displayCards = sortOn ? sortCards(sourceCards) : sourceCards;
-  const selectedCards = sourceCards.filter(c => state.selected.includes(c.id));
-  const canPlay = isMyTurn && selectedCards.length > 0 && canPlayCards(selectedCards, state.pile, state.sevenRestriction);
+  // Resolve the actual selection across BOTH hand and face-up. Previously we
+  // filtered to `sourceCards` (hand-only when src === 'hand'), which meant a
+  // hand-4 + face-up-4 selection only validated the hand half, leaving the
+  // Play button enabled even though the reducer would reject the play.
+  const selectedAll = me
+    ? state.selected
+        .map(id => me.hand.find(c => c.id === id) ?? me.faceUp.find(c => c.id === id))
+        .filter((c): c is Card => !!c)
+    : [];
+  const selectedHand = me ? selectedAll.filter(c => me.hand.some(h => h.id === c.id)) : [];
+  const selectedFaceUp = me ? selectedAll.filter(c => me.faceUp.some(f => f.id === c.id)) : [];
+  // Hand → face-up chain rule mirroring playCardsByIds: face-up cards may be
+  // included only when the deck is empty AND every hand card is part of the
+  // play (no leftovers). canPlayCards already enforces all-same-rank within a
+  // multi-card play, so we don't need to re-check that here.
+  const chainOk =
+    selectedFaceUp.length === 0 ||
+    (state.deck.length === 0 && selectedHand.length === (me?.hand.length ?? 0));
+  const canPlay = isMyTurn && selectedAll.length > 0 && chainOk && canPlayCards(selectedAll, state.pile, state.sevenRestriction);
   const anyLegal = sourceCards.some(c => canPlayCards([c], state.pile, state.sevenRestriction));
 
   // Keyboard shortcuts: 1-9 to toggle nth card, Enter to play, P to pickup.
@@ -1788,6 +2837,23 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
 
   return (
     <LayoutGroup>
+      {/* Spectator persistent banner — pinned bottom-left so it doesn't fight
+          with toasts (top-centre) or the menu pill (top-left). The user is
+          NOT a player; the banner makes that obvious and tells them the
+          interaction model (click any tile to focus). Auto-collapses to a
+          slim "watching X" line after first interaction. */}
+      {isSpectator && (
+        <div
+          className="fixed bottom-3 left-3 z-30 px-3 py-1.5 rounded-full bg-violet-600/90 backdrop-blur-md ring-1 ring-violet-300/30 text-white text-xs font-semibold shadow-[0_8px_24px_rgba(124,58,237,0.45)] flex items-center gap-2 pointer-events-none"
+          role="status"
+          aria-live="polite"
+        >
+          <span aria-hidden>👁</span>
+          {spectatorFocus !== null && state.players[spectatorFocus]
+            ? <>Spectating — watching <strong className="font-bold">{state.players[spectatorFocus].name}</strong></>
+            : <>Spectating — click any player to follow</>}
+        </div>
+      )}
       <div className="flex flex-col lg:flex-row min-h-full lg:h-screen lg:overflow-hidden">
         <AnimatePresence>
           {beatToIt && (
@@ -1805,7 +2871,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
           )}
         </AnimatePresence>
         <div className="flex-1 p-3 sm:p-4 pt-14 flex flex-col gap-3 sm:gap-4 lg:gap-2 min-w-0 lg:min-h-0">
-          <StatusBar state={state} viewerId={viewerId} isMyTurn={isMyTurn} />
+          <StatusBar state={state} viewerId={viewerId} isMyTurn={isMyTurn} spectatorCount={spectatorCount} />
           {/* Player tiles + center piles. Linear stack on small screens (turn-ordered);
               circular table layout on lg+ so the viewer can see who's next at a glance. */}
           {(() => {
@@ -1818,6 +2884,8 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
                   player={pp}
                   isCurrent={pp.id === state.current}
                   isViewer={pp.id === viewer && !isSpectator}
+                  isSpectatorFocus={isSpectator && pp.id === viewer}
+                  onSpectatorFocus={isSpectator ? () => setSpectatorFocus(pp.id) : undefined}
                   compact={compact}
                   faceDownClickable={isOwnArea && src === 'faceDown'}
                   onFaceDownClick={(id) => dispatch({ type: 'FLIP_FACEDOWN', id })}
@@ -1850,7 +2918,12 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
           <div className="border-t border-white/15 pt-3 mx-auto w-full max-w-3xl">
             <div className="flex items-center justify-between mb-2">
               <div className="text-xs sm:text-sm text-white/85">
-                {isSpectator && <>Spectating — {state.players[state.current]?.name}'s turn</>}
+                {isSpectator && me && (
+                  <>
+                    <span className="text-violet-200 font-semibold">👁 {me.name}'s hand</span>
+                    {state.current === viewer && <span className="ml-1 text-white/60">— their turn</span>}
+                  </>
+                )}
                 {!isSpectator && !isMyTurn && <>Waiting for {state.players[state.current].name}…</>}
                 {isMyTurn && src === 'hand' && <>Your hand: <span className="text-white/60">(1-9 to select, Enter play, P pickup)</span></>}
                 {isMyTurn && src === 'faceUp' && <>Hand & deck empty — playing from face-up.</>}
@@ -1889,7 +2962,8 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
                   {displayCards.map(c => {
                     const wouldBeOk = isMyTurn ? canPlayCards([c], state.pile, state.sevenRestriction) : true;
                     const isCutMatch = canCut && myCutMatches.some(m => m.id === c.id);
-                    // One-click cut: clicking a glowing card on someone else's turn fires CUT immediately.
+                    const isChainMatch = isCutMatch && isChainOpportunity;
+                    // One-click out-of-turn play: clicking a glowing card fires CUT.
                     const onClick = isMyTurn
                       ? () => dispatch({ type: 'TOGGLE_SELECT', id: c.id })
                       : isCutMatch
@@ -1901,7 +2975,8 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
                         fromDeck={fromDeckIds?.has(c.id)}
                         selected={state.selected.includes(c.id)}
                         dim={isMyTurn && !wouldBeOk && state.selected.length === 0}
-                        cuttable={isCutMatch}
+                        cuttable={isCutMatch && !isChainMatch}
+                        chainable={isChainMatch}
                         onClick={onClick}
                       />
                     );
@@ -1949,9 +3024,15 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
                     initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
                     whileTap={{ scale: 0.95 }}
                     onClick={() => dispatch({ type: 'CUT', player: viewer, ids: myCutMatches.map(c => c.id) })}
-                    className="px-4 sm:px-5 h-9 sm:h-10 rounded-full text-sm font-semibold flex items-center gap-1.5 bg-fuchsia-600 hover:bg-fuchsia-500 active:scale-95 text-white shadow-[0_4px_12px_rgba(232,121,249,0.55)] animate-pulse"
-                    title={`Cut with ${myCutMatches.map(c => c.rank + c.suit).join(', ')}`}
-                  >✂ CUT <span className="opacity-70 font-normal">{myCutMatches.length}</span></motion.button>
+                    className={`px-4 sm:px-5 h-9 sm:h-10 rounded-full text-sm font-semibold flex items-center gap-1.5 active:scale-95 text-white animate-pulse ${
+                      isChainOpportunity
+                        ? 'bg-emerald-600 hover:bg-emerald-500 shadow-[0_4px_12px_rgba(52,211,153,0.55)]'
+                        : 'bg-fuchsia-600 hover:bg-fuchsia-500 shadow-[0_4px_12px_rgba(232,121,249,0.55)]'
+                    }`}
+                    title={isChainOpportunity ? `Chain ${myCutMatches.map(c => c.rank + c.suit).join(', ')}` : `Cut with ${myCutMatches.map(c => c.rank + c.suit).join(', ')}`}
+                  >
+                    {isChainOpportunity ? '↪ CHAIN' : '✂ CUT'} <span className="opacity-70 font-normal">{myCutMatches.length}</span>
+                  </motion.button>
                 )}
               </div>
             </div>
@@ -1959,6 +3040,14 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
 
           {onEmote && !isSpectator && (
             <EmoteBar onEmote={onEmote} />
+          )}
+          {onChat && chats && (
+            <ChatPanel
+              chats={chats}
+              selfPlayerId={isSpectator ? -1 : viewer}
+              players={state.players.map(p => ({ id: p.id, name: p.name }))}
+              onSend={onChat}
+            />
           )}
         </div>
         <GameLog log={state.log} sidebar />
@@ -2086,6 +3175,181 @@ function EmoteBurst({ def, seed }: { def: EmoteDef; seed: number }) {
   );
 }
 
+/* ============== In-room chat ============== */
+
+// Floating chat panel — collapsed icon at bottom-right, expanded sliding panel
+// shows the last messages + input. Lives outside the player tile system so
+// spectators can chat too (their messages render with a "Spectator" tag and
+// neutral colour). Modern glass styling consistent with the action bar.
+function ChatPanel({ chats, selfPlayerId, players, onSend }: {
+  chats: ChatMsg[];
+  selfPlayerId: number;          // viewer's seat id, or -1 for spectator
+  players: { id: number; name: string }[];
+  onSend: (text: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState('');
+  const [seenIds, setSeenIds] = useState<Set<string>>(() => new Set(chats.map(c => c.id)));
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  // Unread count excludes the user's own messages — you don't get a
+  // notification for your own typing.
+  const unread = open ? 0 : chats.filter(c => !seenIds.has(c.id) && c.playerId !== selfPlayerId).length;
+  // When the panel opens (or new messages while open), mark everything seen
+  // and scroll to the bottom.
+  useEffect(() => {
+    if (open) {
+      setSeenIds(new Set(chats.map(c => c.id)));
+      // Defer scroll so the layout is settled.
+      requestAnimationFrame(() => {
+        const el = scrollRef.current;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
+    }
+  }, [open, chats]);
+
+  // Floating preview bubble — shows the most recent unread message above the
+  // launcher when the panel is closed. Auto-dismisses after 4s, or when the
+  // user opens chat. Self-messages are skipped, and we play a soft ping.
+  const [preview, setPreview] = useState<ChatMsg | null>(null);
+  const lastSeenChatIdRef = useRef<string | null>(chats[chats.length - 1]?.id ?? null);
+  useEffect(() => {
+    const newest = chats[chats.length - 1];
+    if (!newest) return;
+    if (newest.id === lastSeenChatIdRef.current) return;
+    lastSeenChatIdRef.current = newest.id;
+    if (open) return;
+    if (newest.playerId === selfPlayerId) return;
+    setPreview(newest);
+    // Subtle ping — uses the existing 'click' tone (already a polite blip).
+    sfx.play('click');
+    const t = setTimeout(() => setPreview(null), 4000);
+    return () => clearTimeout(t);
+  }, [chats, open, selfPlayerId]);
+  // Clear the preview the moment the panel opens so it doesn't linger.
+  useEffect(() => { if (open) setPreview(null); }, [open]);
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const t = text.trim();
+    if (!t) return;
+    onSend(t.slice(0, 240));
+    setText('');
+  };
+
+  const colorForChat = (c: ChatMsg) => c.playerId === -1 ? null : colorFor(c.playerId);
+
+  return (
+    <div className="fixed bottom-16 right-3 z-30">
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: 12, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 12, scale: 0.95 }}
+            transition={{ type: 'spring', stiffness: 300, damping: 26 }}
+            className="absolute bottom-12 right-0 w-72 sm:w-80 max-h-[70vh] flex flex-col bg-slate-900/92 backdrop-blur-md ring-1 ring-white/15 rounded-2xl shadow-[0_12px_32px_rgba(0,0,0,0.55)] overflow-hidden"
+          >
+            <div className="flex items-center justify-between px-3 py-2 border-b border-white/10">
+              <span className="text-xs font-semibold text-white/85 flex items-center gap-1.5">
+                <span aria-hidden>💬</span> Chat
+              </span>
+              <button
+                onClick={() => setOpen(false)}
+                className="text-white/60 hover:text-white text-sm leading-none"
+                aria-label="Close chat"
+              >×</button>
+            </div>
+            <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-1.5 max-h-72">
+              {chats.length === 0 && (
+                <div className="text-xs text-white/40 italic text-center py-4">
+                  No messages yet — say hi 👋
+                </div>
+              )}
+              {chats.map(c => {
+                const mine = c.playerId === selfPlayerId;
+                const palette = colorForChat(c);
+                return (
+                  <div key={c.id} className={`flex flex-col ${mine ? 'items-end' : 'items-start'}`}>
+                    <div className="text-[10px] text-white/55 px-1 flex items-center gap-1">
+                      {palette && <span className={`inline-block w-1.5 h-1.5 rounded-full ${palette.dot}`} />}
+                      <span>{c.name}{c.playerId === -1 && <span className="ml-1 px-1 py-px rounded bg-white/15 text-white/70 text-[9px]">spectator</span>}</span>
+                    </div>
+                    <div
+                      className={`max-w-[85%] px-2.5 py-1.5 rounded-2xl text-sm leading-snug shadow-sm ${
+                        mine
+                          ? 'bg-emerald-500 text-white rounded-br-md'
+                          : c.playerId === -1
+                            ? 'bg-white/10 text-white/85 rounded-bl-md'
+                            : 'bg-white/15 text-white rounded-bl-md'
+                      }`}
+                    >
+                      {c.text}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <form onSubmit={submit} className="flex items-center gap-1.5 px-2 py-2 border-t border-white/10 bg-slate-900/60">
+              <input
+                value={text}
+                onChange={e => setText(e.target.value)}
+                placeholder="Say something…"
+                maxLength={240}
+                className="flex-1 px-2.5 py-1.5 rounded-full bg-white/10 text-sm text-white placeholder-white/40 focus:outline-none focus:bg-white/15 ring-1 ring-white/10"
+              />
+              <button
+                type="submit"
+                disabled={!text.trim()}
+                className={`px-3 py-1.5 rounded-full text-sm font-semibold ${text.trim() ? 'bg-emerald-500 hover:bg-emerald-400 text-white' : 'bg-white/10 text-white/40 cursor-not-allowed'}`}
+                aria-label="Send"
+              >→</button>
+            </form>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Floating message preview — peeks out from above the launcher with the
+          most recent unread message. Auto-dismisses after 4s; clicking opens
+          the panel instead. Pointer-events on so it's clickable. */}
+      <AnimatePresence>
+        {preview && !open && (
+          <motion.button
+            type="button"
+            onClick={() => setOpen(true)}
+            initial={{ opacity: 0, x: 24, y: 4, scale: 0.92 }}
+            animate={{ opacity: 1, x: 0, y: 0, scale: 1 }}
+            exit={{ opacity: 0, x: 12, y: 4, scale: 0.92 }}
+            transition={{ type: 'spring', stiffness: 320, damping: 26 }}
+            className="absolute bottom-12 right-0 max-w-[240px] bg-slate-900/92 backdrop-blur-md ring-1 ring-emerald-400/30 rounded-2xl rounded-br-md shadow-[0_8px_24px_rgba(0,0,0,0.5)] p-2.5 text-left"
+            aria-label={`New message from ${preview.name}`}
+          >
+            <div className="flex items-center gap-1 text-[10px] font-semibold text-emerald-300/90 mb-0.5">
+              {preview.playerId !== -1 && (
+                <span className={`inline-block w-1.5 h-1.5 rounded-full ${colorFor(preview.playerId).dot}`} />
+              )}
+              <span className="truncate">{preview.name}</span>
+            </div>
+            <div className="text-sm text-white leading-snug line-clamp-2 break-words">{preview.text}</div>
+          </motion.button>
+        )}
+      </AnimatePresence>
+
+      <button
+        onClick={() => setOpen(o => !o)}
+        title="Chat"
+        className={`relative w-10 h-10 rounded-full bg-slate-900/85 backdrop-blur-md ring-1 ring-white/15 shadow-lg text-xl hover:bg-slate-800 flex items-center justify-center ${unread > 0 && !open ? 'chat-pulse' : ''}`}
+      >
+        {open ? '×' : '💬'}
+        {unread > 0 && !open && (
+          <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-500 text-white text-[10px] font-bold flex items-center justify-center ring-2 ring-slate-900">
+            {unread > 9 ? '9+' : unread}
+          </span>
+        )}
+      </button>
+    </div>
+  );
+}
+
 function EmoteBar({ onEmote }: { onEmote: (e: string) => void }) {
   const [open, setOpen] = useState(false);
   const [picker, setPicker] = useState(false);
@@ -2156,6 +3420,12 @@ function EmoteBar({ onEmote }: { onEmote: (e: string) => void }) {
   );
 }
 
+// 30s reveal time-limit, mirrored from the server-side TURN_TIMEOUT_MS.
+// Local games run their own copy of this timer (the server isn't involved
+// for hot-seat). Network games rely on the server's auto-reveal — we still
+// render a visible countdown here so the player knows it's coming.
+const REVEAL_TIMEOUT_MS = 30 * 1000;
+
 function RevealChoiceScreen({ state, dispatch, viewerId }: {
   state: GameState; dispatch: (a: Action) => void; viewerId: number | null;
 }) {
@@ -2164,6 +3434,36 @@ function RevealChoiceScreen({ state, dispatch, viewerId }: {
   const isMyChoice = viewerId === null
     ? !picker?.isAi
     : (viewerId === state.current && !picker?.isAi);
+
+  // Visible countdown for the active picker. Refreshes 10x/sec so the bar
+  // glides smoothly. Local games (viewerId === null) also enforce the limit
+  // here by dispatching a random REVEAL_CHOICE on expiry — the server
+  // already does this for network games, but adding it locally too means
+  // the rule is consistent everywhere and the UI is self-honest.
+  const startedAtRef = useRef<number>(Date.now());
+  // Reset the start whenever this screen mounts for a fresh reveal (the key
+  // changes via state.current → React unmounts/mounts cleanly).
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (!isMyChoice) return;
+    const id = setInterval(() => setNow(Date.now()), 100);
+    return () => clearInterval(id);
+  }, [isMyChoice]);
+  const elapsed = now - startedAtRef.current;
+  const remaining = Math.max(0, REVEAL_TIMEOUT_MS - elapsed);
+  const pct = Math.min(100, (elapsed / REVEAL_TIMEOUT_MS) * 100);
+  // Auto-pick a random card on expiry — only fires for local games where
+  // viewerId === null (no server). Network games are handled server-side.
+  useEffect(() => {
+    if (!isMyChoice || viewerId !== null) return;
+    if (rawCards.length === 0) return;
+    const t = setTimeout(() => {
+      const choice = rawCards[Math.floor(Math.random() * rawCards.length)];
+      if (choice) dispatch({ type: 'REVEAL_CHOICE', id: choice.id });
+    }, REVEAL_TIMEOUT_MS);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMyChoice, viewerId, rawCards.length]);
   // Picker sees real cards sorted for scanning; everyone else just gets a tiny
   // status pip — no full-screen takeover when it's not their decision.
   if (!isMyChoice) {
@@ -2197,11 +3497,30 @@ function RevealChoiceScreen({ state, dispatch, viewerId }: {
       aria-label="Reveal a card from your hand"
     >
       <div className="max-w-3xl mx-auto px-4 sm:px-6 pt-3 pb-4 flex flex-col items-center gap-2.5">
+        {/* Slim countdown bar at the very top — fills + warms toward red as the
+            30s timeout approaches so the player knows a random card will be
+            picked if they stall. Hidden when expired (right before the auto
+            REVEAL_CHOICE fires from the local-mode timeout effect). */}
+        {remaining > 0 && (
+          <div className="w-full max-w-md h-1 rounded-full bg-emerald-900/60 overflow-hidden">
+            <div
+              className={`h-full transition-all duration-100 ease-linear ${
+                pct > 85 ? 'bg-rose-500' : pct > 65 ? 'bg-amber-400' : 'bg-emerald-400'
+              }`}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+        )}
         {/* Drag handle — purely decorative cue that this is a sheet. */}
         <div className="w-10 h-1 rounded-full bg-emerald-300/40" aria-hidden />
         <div className="flex items-center gap-2">
           <span className="text-sm sm:text-base font-bold text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)]">
             Pick a card to reveal
+          </span>
+          <span className={`text-xs font-semibold tabular-nums ${
+            remaining < 8000 ? 'text-rose-300' : 'text-white/70'
+          }`}>
+            {Math.ceil(remaining / 1000)}s
           </span>
         </div>
         <div className="flex flex-wrap gap-2 justify-center">
@@ -2278,7 +3597,7 @@ function FlipScreen({ state, dispatch, viewerId }: {
   );
 }
 
-function EndScreen({ state, onPlayAgain }: { state: GameState; onPlayAgain: () => void }) {
+function EndScreen({ state, onPlayAgain, canPlayAgain = true, awaitingHost = false }: { state: GameState; onPlayAgain: () => void; canPlayAgain?: boolean; awaitingHost?: boolean }) {
   const loser = state.players.find(p => p.id === state.poopHead);
   const order = state.players
     .filter(p => p.finishPos !== null)
@@ -2297,6 +3616,7 @@ function EndScreen({ state, onPlayAgain }: { state: GameState; onPlayAgain: () =
   const ultimate = state.mode === 'ultimate';
   const awards: { label: string; emoji: string; key: keyof PlayerStats }[] = [
     { label: 'Most pickups', emoji: '📥', key: 'pickups' },
+    { label: 'Largest pile picked up', emoji: '🗑', key: 'largestPile' },
     { label: 'Most cards played', emoji: '🃏', key: 'cardsPlayed' },
     { label: 'Most power cards', emoji: '⚡', key: 'powerCards' },
     { label: 'Most burns triggered', emoji: '🔥', key: 'burns' },
@@ -2372,6 +3692,7 @@ function EndScreen({ state, onPlayAgain }: { state: GameState; onPlayAgain: () =
             <tr className="text-xs text-gray-500 uppercase border-b border-gray-200">
               <th className="text-left p-1">Player</th>
               <th className="p-1">📥 Pick</th>
+              <th className="p-1">🗑 Biggest</th>
               <th className="p-1">🃏 Played</th>
               <th className="p-1">⚡ Power</th>
               <th className="p-1">🔥 Burns</th>
@@ -2380,7 +3701,9 @@ function EndScreen({ state, onPlayAgain }: { state: GameState; onPlayAgain: () =
           </thead>
           <tbody>
             {state.players.map(p => {
-              const s = state.stats[p.id] ?? { pickups: 0, cardsPlayed: 0, powerCards: 0, burns: 0, cuts: 0 };
+              // Default includes largestPile: 0 so older saved/in-flight games
+              // (which may not have the field) don't render undefined.
+              const s = state.stats[p.id] ?? { pickups: 0, cardsPlayed: 0, powerCards: 0, burns: 0, cuts: 0, largestPile: 0 };
               return (
                 <tr key={p.id} className="border-b border-gray-100 last:border-b-0">
                   <td className="p-1 flex items-center gap-1.5">
@@ -2388,6 +3711,7 @@ function EndScreen({ state, onPlayAgain }: { state: GameState; onPlayAgain: () =
                     {p.name}{p.isAi && <span className="text-[10px] text-gray-500">AI</span>}
                   </td>
                   <td className="p-1 text-center tabular-nums">{s.pickups}</td>
+                  <td className="p-1 text-center tabular-nums">{s.largestPile ?? 0}</td>
                   <td className="p-1 text-center tabular-nums">{s.cardsPlayed}</td>
                   <td className="p-1 text-center tabular-nums">{s.powerCards}</td>
                   <td className="p-1 text-center tabular-nums">{s.burns}</td>
@@ -2399,11 +3723,24 @@ function EndScreen({ state, onPlayAgain }: { state: GameState; onPlayAgain: () =
         </table>
       </div>
 
-      <div className="flex gap-2 z-10">
-        <button onClick={onPlayAgain} className="px-6 py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-lg shadow">
-          Play again
-        </button>
-        <ShareScorecardButton state={state} />
+      <div className="flex flex-col items-center gap-2 z-10">
+        <div className="flex gap-2 items-center">
+          {canPlayAgain && (
+            <button onClick={onPlayAgain} className="px-6 py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-lg shadow">
+              {awaitingHost ? '🔄 Rematch' : '🔄 Play again'}
+            </button>
+          )}
+          <ShareScorecardButton state={state} />
+        </div>
+        {awaitingHost && !canPlayAgain && (
+          <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-slate-900/80 backdrop-blur-md ring-1 ring-white/15 text-white text-sm font-semibold shadow-lg">
+            <motion.span
+              animate={{ opacity: [0.4, 1, 0.4] }}
+              transition={{ repeat: Infinity, duration: 1.4 }}
+            >⏳</motion.span>
+            Waiting for host to start a rematch…
+          </div>
+        )}
       </div>
     </div>
   );
@@ -2559,7 +3896,10 @@ function ShareRoomButton({ code, url }: { code: string; url: string }) {
 function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; onLeave: () => void; prefilledCode?: string }) {
   const [name, setName] = useState(() => loadName());
   const [code, setCode] = useState(prefilledCode?.toUpperCase() ?? '');
-  const [pendingCode, setPendingCode] = useState<string | null>(null);
+  // Public rooms appear in LIST_ROOMS and are joinable with a single click.
+  // Private rooms are unlisted; only the room code lets you in (host shares
+  // it via link / iMessage / etc).
+  const [createPrivate, setCreatePrivate] = useState(false);
   const [aiDifficulty, setAiDifficulty] = useState<AiDifficulty>(() => {
     try {
       const v = localStorage.getItem('ph_ai_difficulty');
@@ -2590,7 +3930,10 @@ function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; o
         {conn.status === 'error' && <div className="text-rose-700 text-sm max-w-md text-center">{conn.error ?? 'Connection failed.'} Make sure the server is running.</div>}
         {conn.status === 'open' && (
           <div className="flex flex-col gap-3 w-80">
-            {/* Public room list */}
+            {/* Public room list — one-click join. Each row is the join button:
+                you don't have to retype the code, the listing knows it. Started
+                rooms show "Spectate" instead. Private rooms never appear here
+                — they're hidden by the server. */}
             {conn.rooms.length > 0 && (
               <div className="border border-gray-300 rounded bg-white/80">
                 <div className="px-3 py-2 text-xs font-semibold text-gray-700 border-b border-gray-200 flex items-center justify-between">
@@ -2600,60 +3943,49 @@ function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; o
                     className="text-gray-500 hover:text-gray-800" title="Refresh"
                   >↻</button>
                 </div>
-                <ul className="max-h-48 overflow-y-auto divide-y divide-gray-100">
+                <ul className="max-h-56 overflow-y-auto divide-y divide-gray-100">
                   {conn.rooms.map(r => {
-                    const selected = pendingCode === r.code;
+                    const isJoinable = !r.started && r.playerCount < r.maxPlayers;
+                    const action = r.started ? 'spectate' : (isJoinable ? 'join' : 'full');
+                    const onClick = () => {
+                      if (action === 'full') return;
+                      if (action === 'join' && !nameTrim) return;
+                      saveName(nameTrim);
+                      if (action === 'spectate') conn.send({ t: 'SPECTATE', code: r.code });
+                      else                       conn.send({ t: 'JOIN', code: r.code, name: nameTrim });
+                    };
                     return (
                       <li key={r.code}>
                         <button
-                          onClick={() => setPendingCode(selected ? null : r.code)}
-                          className={`w-full px-3 py-2 text-left text-sm flex items-center justify-between ${selected ? 'bg-indigo-50' : 'hover:bg-gray-50'}`}
+                          onClick={onClick}
+                          disabled={action === 'full' || (action === 'join' && !nameTrim)}
+                          className={`w-full px-3 py-2.5 text-left text-sm flex items-center justify-between transition-colors ${
+                            action === 'full'
+                              ? 'opacity-60 cursor-not-allowed'
+                              : action === 'join' && !nameTrim
+                                ? 'opacity-60 cursor-not-allowed'
+                                : 'hover:bg-indigo-50 active:bg-indigo-100'
+                          }`}
                         >
-                          <span className="flex flex-col">
-                            <span className="font-semibold">{r.host}'s game</span>
+                          <span className="flex flex-col min-w-0">
+                            <span className="font-semibold truncate">{r.host}'s game</span>
                             <span className="text-xs text-gray-500">
                               {r.playerCount}/{r.maxPlayers} players · {r.started ? 'in progress' : 'lobby'}
                             </span>
                           </span>
-                          <span className="flex items-center gap-1.5">
+                          <span className="flex items-center gap-1.5 whitespace-nowrap">
                             {r.started && r.connectedHumans === 0 && (
                               <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300">paused</span>
                             )}
-                            <span className={`text-xs ${r.started ? 'text-rose-600' : 'text-emerald-600'}`}>
-                              {r.started ? 'spectate' : 'join'}
+                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
+                              action === 'full'   ? 'bg-gray-200 text-gray-600' :
+                              action === 'spectate' ? 'bg-gray-700 text-white' :
+                                                    'bg-emerald-500 text-white'
+                            }`}>
+                              {action === 'full' ? 'full' : action === 'spectate' ? 'spectate' : '▶ join'}
                             </span>
                           </span>
                         </button>
-                        {selected && (
-                          <div className="px-3 pb-3 pt-1 bg-indigo-50/60 flex flex-col gap-2">
-                            <div className="text-xs text-gray-700">Enter the room code to {r.started ? 'spectate' : 'join'} {r.host}'s game:</div>
-                            <input
-                              autoFocus
-                              value={code}
-                              onChange={e => setCode(e.target.value.toUpperCase())}
-                              placeholder="Room code"
-                              maxLength={4}
-                              className="px-2 py-1 border border-gray-300 rounded uppercase tracking-widest text-center text-sm"
-                            />
-                            {!r.started && (
-                              <button
-                                disabled={!nameTrim || codeTrim !== r.code}
-                                onClick={() => { saveName(nameTrim); conn.send({ t: 'JOIN', code: codeTrim, name: nameTrim }); }}
-                                className={`px-3 py-1.5 rounded text-sm font-semibold ${nameTrim && codeTrim === r.code ? 'bg-indigo-500 hover:bg-indigo-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
-                              >Join {r.host}'s game</button>
-                            )}
-                            {r.started && (
-                              <button
-                                disabled={codeTrim !== r.code}
-                                onClick={() => conn.send({ t: 'SPECTATE', code: codeTrim })}
-                                className={`px-3 py-1.5 rounded text-sm font-semibold ${codeTrim === r.code ? 'bg-gray-700 hover:bg-gray-800 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
-                              >Spectate</button>
-                            )}
-                            {codeTrim.length > 0 && codeTrim !== r.code && (
-                              <div className="text-xs text-rose-700">Code doesn't match.</div>
-                            )}
-                          </div>
-                        )}
                       </li>
                     );
                   })}
@@ -2663,18 +3995,59 @@ function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; o
 
             <input value={name} onChange={e => { setName(e.target.value); saveName(e.target.value); }} placeholder="Your name"
               className="px-3 py-2 border border-gray-300 rounded" />
-            <button
-              disabled={!nameTrim}
-              onClick={() => { saveName(nameTrim); conn.send({ t: 'CREATE', name: nameTrim }); }}
-              className={`px-4 py-2 rounded font-semibold ${nameTrim ? 'bg-amber-500 hover:bg-amber-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
-            >Create room</button>
-            <div className="text-center text-xs text-gray-500">— or —</div>
+
+            {/* Create-room block. The toggle is a two-pill segmented control:
+                Public (listed, one-click joinable from the live games list)
+                or Private (hidden — only joinable via the code, which the
+                host shares out-of-band). The 4-char code itself is the
+                credential — no separate password. */}
+            <div className="flex flex-col gap-2 p-3 rounded-lg bg-white/60 border border-gray-300">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-gray-700">New room</span>
+                <div className="flex items-center bg-gray-200 rounded-full p-0.5 text-xs font-semibold">
+                  <button
+                    type="button"
+                    onClick={() => setCreatePrivate(false)}
+                    aria-pressed={!createPrivate}
+                    className={`flex items-center gap-1 px-2.5 py-1 rounded-full transition-colors ${!createPrivate ? 'bg-emerald-500 text-white shadow-sm' : 'text-gray-600'}`}
+                    title="Listed in the live games list — anyone can click Join"
+                  >🌐 Public</button>
+                  <button
+                    type="button"
+                    onClick={() => setCreatePrivate(true)}
+                    aria-pressed={createPrivate}
+                    className={`flex items-center gap-1 px-2.5 py-1 rounded-full transition-colors ${createPrivate ? 'bg-slate-700 text-white shadow-sm' : 'text-gray-600'}`}
+                    title="Hidden — only joinable via the room code"
+                  >🔒 Private</button>
+                </div>
+              </div>
+              <p className="text-[11px] text-gray-500 leading-snug">
+                {createPrivate
+                  ? 'Hidden from the live games list. Share the room code to invite friends.'
+                  : 'Anyone can find and join from the live games list above.'}
+              </p>
+              <button
+                disabled={!nameTrim}
+                onClick={() => {
+                  saveName(nameTrim);
+                  conn.send({ t: 'CREATE', name: nameTrim, private: createPrivate });
+                }}
+                className={`px-4 py-2 rounded font-semibold ${
+                  nameTrim ? 'bg-amber-500 hover:bg-amber-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                }`}
+              >{createPrivate ? '🔒 Create private room' : '🌐 Create public room'}</button>
+            </div>
+
+            <div className="text-center text-xs text-gray-500">— or join with a code —</div>
             <input value={code} onChange={e => setCode(e.target.value.toUpperCase())} placeholder="Room code"
               className="px-3 py-2 border border-gray-300 rounded uppercase tracking-widest text-center" maxLength={4} />
             <div className="grid grid-cols-2 gap-2">
               <button
                 disabled={!nameTrim || codeTrim.length !== 4}
-                onClick={() => { saveName(nameTrim); conn.send({ t: 'JOIN', code: codeTrim, name: nameTrim }); }}
+                onClick={() => {
+                  saveName(nameTrim);
+                  conn.send({ t: 'JOIN', code: codeTrim, name: nameTrim });
+                }}
                 className={`px-4 py-2 rounded font-semibold ${nameTrim && codeTrim.length === 4 ? 'bg-indigo-500 hover:bg-indigo-600 text-white' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
               >Join</button>
               <button
@@ -2701,7 +4074,17 @@ function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; o
   const hasAi = conn.lobby.players.some(p => p.isAi);
   return (
     <div className="h-full flex flex-col items-center justify-center gap-4 p-6">
-      <h2 className="text-3xl font-bold">Room {conn.lobby.code}</h2>
+      <h2 className="text-3xl font-bold flex items-center gap-2">
+        Room {conn.lobby.code}
+        {conn.lobby.private && (
+          <span
+            className="text-xs px-2 py-0.5 rounded-full bg-slate-700 text-white font-semibold flex items-center gap-1 align-middle"
+            title="Private — hidden from the live games list"
+          >
+            <span aria-hidden>🔒</span> Private
+          </span>
+        )}
+      </h2>
       <ShareRoomButton code={conn.lobby.code} url={shareUrl} />
       <div className="text-sm text-gray-600">{MIN_PLAYERS}–{MAX_PLAYERS} players</div>
       <ul className="bg-white/80 p-4 rounded-lg border border-gray-300 w-80">
@@ -2775,6 +4158,15 @@ function NetLobbyScreen({ conn, onLeave, prefilledCode }: { conn: NetworkConn; o
         )}
       </div>
       {conn.error && <div className="text-rose-700 text-sm">{conn.error}</div>}
+
+      {/* Chat in the lobby — same component as in-game so the conversation
+          carries through. Spectators appear here too if any are watching. */}
+      <ChatPanel
+        chats={conn.lobby.chats ?? []}
+        selfPlayerId={conn.lobby.myId}
+        players={conn.lobby.players.map(p => ({ id: p.id, name: p.name }))}
+        onSend={(text) => conn.send({ t: 'CHAT', text })}
+      />
     </div>
   );
 }
@@ -2828,14 +4220,28 @@ function useEventEffects(log: string[], resetKey: any): { toasts: Toast[] } {
     for (const line of newLines) {
       if (/Pile burned by 10/i.test(line)) { sfx.play('burn'); haptic('burn'); adds.push({ id: ++idCounter.current, text: '🔥 Pile burned!', tone: 'burn' }); }
       else if (/Four of a kind/i.test(line)) { sfx.play('burn'); haptic('burn'); adds.push({ id: ++idCounter.current, text: '🔥 Four of a kind!', tone: 'burn' }); }
-      else if (/picked up the pile/i.test(line)) { sfx.play('pickup'); haptic('pickup'); }
+      // Illegal face-down pickups: keep the existing fahhhh sample (different
+      // emotional read — that's a "you blew it" moment, not a normal pickup).
+      else if (/illegal! Picking up|illegal! Picks up/i.test(line)) { sfx.playSample(SFX_FAHHHH); haptic('error'); }
+      // All other pickup phrasings go through the count-aware pickup sound +
+      // haptics. Catches both "X picked up the pile (N cards)..." and the
+      // more common "X picked up N — must reveal..." case which used to be
+      // silent. Vibration pattern scales with N so a 25-card pickup feels
+      // genuinely heavier in your hand than a 3-card one (Android only —
+      // iOS Safari blocks web vibration).
+      else if (/picked up\b/i.test(line)) {
+        const m = line.match(/picked up (?:the pile \()?(\d+)/i);
+        const count = m ? parseInt(m[1], 10) : 1;
+        sfx.play('pickup', { count });
+        haptic('pickup', { count });
+      }
       else if (/pile reset/i.test(line)) { sfx.play('reset'); haptic('play'); adds.push({ id: ++idCounter.current, text: '🔄 Pile reset', tone: 'reset' }); }
       else if (/direction reversed/i.test(line)) { sfx.play('reverse'); haptic('play'); adds.push({ id: ++idCounter.current, text: '↺ Reverse!', tone: 'reverse' }); }
       else if (/skipped/i.test(line)) { sfx.play('skip'); haptic('play'); adds.push({ id: ++idCounter.current, text: '⏭ Skip!', tone: 'skip' }); }
       else if (/7-or-lower/i.test(line)) { sfx.play('seven'); haptic('play'); adds.push({ id: ++idCounter.current, text: '7-or-lower lock', tone: 'seven' }); }
       else if (/POOP HEAD/i.test(line)) { haptic('win'); adds.push({ id: ++idCounter.current, text: '🏆 Game over!', tone: 'win' }); }
+      else if (/\bchained\b/i.test(line)) { sfx.play('chain'); haptic('play'); adds.push({ id: ++idCounter.current, text: '↪ Chain!', tone: 'win' }); }
       else if (/CUT with/i.test(line)) { sfx.playSample(SFX_OBJECTION); haptic('cut'); adds.push({ id: ++idCounter.current, text: '✂ CUT!', tone: 'reverse' }); }
-      else if (/illegal! Picking up|illegal! Picks up/i.test(line)) { sfx.playSample(SFX_FAHHHH); haptic('error'); }
       else if (/^.* played /i.test(line) || /flipped face-down/i.test(line)) { sfx.play('play'); haptic('play'); }
     }
     if (adds.length) {
@@ -2967,9 +4373,26 @@ function LocalGame({ humans, ais, aiSpeed, aiDifficulty, onExit }: { humans: num
       if (!isHotSeat) {
         const me = state.players[0];
         if (me && !me.isAi) {
-          if (me.finishPos === 0) recordOutcome('win');
+          if (me.finishPos === 1) recordOutcome('win');
           else if (state.poopHead === 0) recordOutcome('loss');
           else recordOutcome('middle');
+          // Persist a full match row to Supabase if signed in. No-op for guests.
+          const s = state.stats[0] ?? { pickups: 0, cardsPlayed: 0, powerCards: 0, burns: 0, cuts: 0, largestPile: 0 };
+          recordMatch({
+            mode: state.mode,
+            online: false,
+            player_count: state.players.length,
+            ai_count: state.players.filter(p => p.isAi).length,
+            finish_pos: me.finishPos,
+            was_poop_head: state.poopHead === 0,
+            pickups: s.pickups,
+            cards_played: s.cardsPlayed,
+            power_cards: s.powerCards,
+            burns: s.burns,
+            cuts: s.cuts,
+            largest_pile: s.largestPile ?? 0,
+            game_log: state.log,
+          });
         }
       }
     } else if (state.phase !== 'end') {
@@ -3010,10 +4433,15 @@ function LocalGame({ humans, ais, aiSpeed, aiDifficulty, onExit }: { humans: num
     }
   }
 
+  const handleLocalLeave = () => {
+    const inGame = state.phase !== 'end' && state.phase !== 'setup';
+    if (inGame && !window.confirm('Leave this game? Your progress will be lost.')) return;
+    onExit();
+  };
   return (
     <>
       <div className="fixed top-3 left-3 z-50 flex flex-col items-start gap-1">
-        <button onClick={onExit} className="text-xs px-2 py-1 bg-white/80 border rounded">← menu</button>
+        <button onClick={handleLocalLeave} className="text-xs px-2 py-1 bg-white/80 border rounded">← menu</button>
         {state.mode === 'ultimate' && <div className="text-[10px] px-2 py-0.5 bg-fuchsia-100 text-fuchsia-800 border border-fuchsia-300 rounded">Ultimate</div>}
       </div>
       <ToastStack toasts={toasts} />
@@ -3051,9 +4479,26 @@ function NetworkGame({ onExit, prefilledCode }: { onExit: () => void; prefilledC
       if (myId >= 0) {
         const me = conn.state.players[myId];
         if (me && !me.isAi) {
-          if (me.finishPos === 0) recordOutcome('win');
+          if (me.finishPos === 1) recordOutcome('win');
           else if (conn.state.poopHead === myId) recordOutcome('loss');
           else recordOutcome('middle');
+          // Persist a full match row to Supabase if signed in.
+          const s = conn.state.stats[myId] ?? { pickups: 0, cardsPlayed: 0, powerCards: 0, burns: 0, cuts: 0, largestPile: 0 };
+          recordMatch({
+            mode: conn.state.mode,
+            online: true,
+            player_count: conn.state.players.length,
+            ai_count: conn.state.players.filter(p => p.isAi).length,
+            finish_pos: me.finishPos,
+            was_poop_head: conn.state.poopHead === myId,
+            pickups: s.pickups,
+            cards_played: s.cardsPlayed,
+            power_cards: s.powerCards,
+            burns: s.burns,
+            cuts: s.cuts,
+            largest_pile: s.largestPile ?? 0,
+            game_log: conn.state.log,
+          });
         }
       }
     } else if (conn.state?.phase !== 'end') {
@@ -3067,36 +4512,47 @@ function NetworkGame({ onExit, prefilledCode }: { onExit: () => void; prefilledC
   } else {
     const viewerId = myId;
     const onEmote = (e: string) => conn.send({ t: 'EMOTE', emoji: e });
+    const onChat = (text: string) => conn.send({ t: 'CHAT', text });
     switch (conn.state.phase) {
       case 'swap': body = <SwapScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} />; break;
       case 'pass':
-      case 'play': body = <PlayScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} emotes={conn.lobby?.emotes} onEmote={onEmote} fromDeckIds={fromDeckIds} />; break;
+      case 'play': body = <PlayScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} emotes={conn.lobby?.emotes} onEmote={onEmote} chats={conn.lobby?.chats} onChat={onChat} fromDeckIds={fromDeckIds} spectatorCount={conn.lobby?.spectatorCount} />; break;
       case 'flipFaceDown': body = <FlipScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} />; break;
       // Same trick as local mode: keep PlayScreen alive under the reveal modal
       // so its log-watch effect fires the pile-pickup animation.
       case 'reveal': body = (
         <>
-          <PlayScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} emotes={conn.lobby?.emotes} onEmote={onEmote} fromDeckIds={fromDeckIds} />
+          <PlayScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} emotes={conn.lobby?.emotes} onEmote={onEmote} chats={conn.lobby?.chats} onChat={onChat} fromDeckIds={fromDeckIds} spectatorCount={conn.lobby?.spectatorCount} />
           <RevealChoiceScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} />
         </>
       ); break;
       case 'end': {
         const isHost = conn.lobby?.myId === conn.lobby?.hostId;
         body = (
-          <>
-            <EndScreen state={conn.state} onPlayAgain={() => isHost ? conn.send({ t: 'PLAY_AGAIN' }) : null} />
-            {!isHost && <div className="fixed bottom-4 left-1/2 -translate-x-1/2 text-sm text-gray-700">Waiting for host to restart…</div>}
-          </>
+          <EndScreen
+            state={conn.state}
+            onPlayAgain={() => conn.send({ t: 'PLAY_AGAIN' })}
+            canPlayAgain={isHost}
+            awaitingHost={!isHost}
+          />
         );
         break;
       }
       default: body = <div className="p-6">Loading…</div>;
     }
   }
+  // Mid-game leave needs confirmation — bailing without intent during a hand
+  // is a common frustration. End/lobby phases can leave silently.
+  const handleLeave = () => {
+    const inGame = conn.state && conn.state.phase !== 'end';
+    if (inGame && !window.confirm('Leave this game? Your seat will stay open until the room times out, but you give up your hand.')) return;
+    conn.disconnect();
+    onExit();
+  };
   return (
     <>
       <div className="fixed top-3 left-3 z-50 flex flex-col items-start gap-1">
-        <button onClick={() => { conn.disconnect(); onExit(); }} className="text-xs px-2 py-1 bg-white/80 border rounded">← menu</button>
+        <button onClick={handleLeave} className="text-xs px-2 py-1 bg-white/80 border rounded">← menu</button>
         {conn.state?.mode === 'ultimate' && <div className="text-[10px] px-2 py-0.5 bg-fuchsia-100 text-fuchsia-800 border border-fuchsia-300 rounded">Ultimate</div>}
       </div>
       <ToastStack toasts={toasts} />
@@ -3156,7 +4612,7 @@ function ConnectionPill({ status, attempt }: { status: NetworkConn['status']; at
 
 /* ============== Main App ============== */
 
-type AppMode = 'menu' | 'localSetup' | 'local' | 'network';
+type AppMode = 'menu' | 'localSetup' | 'local' | 'network' | 'leaderboard' | 'profile';
 
 function readRoomCodeFromUrl(): string | undefined {
   try {
@@ -3173,13 +4629,24 @@ export default function App() {
   const [volume, setVolume] = useState(sfx.volume);
   const [aiSpeed, setAiSpeed] = useState(loadAiSpeed());
   const [localCfg, setLocalCfg] = useState<{ humans: number; ais: number; aiDifficulty: AiDifficulty } | null>(null);
+  // Single auth instance scoped to the app root so the magic-link redirect
+  // lands here, the session is read once, and stats are shared across modes.
+  const auth = useAuth();
 
   const toggleMute = (m: boolean) => { setMuted(m); sfx.setMuted(m); };
   const changeVolume = (v: number) => { setVolume(v); sfx.setVolume(v); };
   const changeAiSpeed = (v: number) => { setAiSpeed(v); saveAiSpeed(v); };
 
+  // Refresh cloud stats whenever the user comes back to the menu (after a
+  // game). Cheap query and the user expects to see the new W/L immediately.
+  useEffect(() => {
+    if (mode === 'menu') auth.refreshStats();
+  }, [mode]);
+
   let body: React.ReactNode;
-  if (mode === 'menu') body = <MenuScreen onLocal={() => setMode('localSetup')} onNetwork={() => setMode('network')} prefilledCode={urlRoom} />;
+  if (mode === 'menu') body = <MenuScreen onLocal={() => setMode('localSetup')} onNetwork={() => setMode('network')} onLeaderboard={() => setMode('leaderboard')} onProfile={() => setMode('profile')} prefilledCode={urlRoom} auth={auth} />;
+  else if (mode === 'leaderboard') body = <LeaderboardScreen onBack={() => setMode('menu')} auth={auth} />;
+  else if (mode === 'profile') body = <ProfileScreen onBack={() => setMode('menu')} auth={auth} />;
   else if (mode === 'localSetup') body = <LocalSetupScreen onStart={(h, a, d) => { setLocalCfg({ humans: h, ais: a, aiDifficulty: d }); setMode('local'); }} onBack={() => setMode('menu')} />;
   else if (mode === 'local' && localCfg) body = <LocalGame humans={localCfg.humans} ais={localCfg.ais} aiSpeed={aiSpeed} aiDifficulty={localCfg.aiDifficulty} onExit={() => setMode('menu')} />;
   else if (mode === 'network') body = <NetworkGame onExit={() => setMode('menu')} prefilledCode={urlRoom} />;

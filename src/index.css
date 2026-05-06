@@ -18,6 +18,16 @@
 }
 .player-acted-pulse { animation: player-acted-pulse 0.6s ease-out 1; }
 
+/* Soft expanding ring on the chat launcher when there are unread messages.
+ * Repeats indefinitely until the panel is opened. Emerald to match the
+ * "new" / send-button colour. Subtle — not jarring. */
+@keyframes chat-pulse {
+  0%   { box-shadow: 0 0 0 0   rgba(16,185,129,0.55), 0 4px 12px rgba(0,0,0,0.35); }
+  70%  { box-shadow: 0 0 0 12px rgba(16,185,129,0),    0 4px 12px rgba(0,0,0,0.35); }
+  100% { box-shadow: 0 0 0 0   rgba(16,185,129,0),    0 4px 12px rgba(0,0,0,0.35); }
+}
+.chat-pulse { animation: chat-pulse 1.6s ease-out infinite; }
+
 html, body, #root {
   height: 100%;
   margin: 0;

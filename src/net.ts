@@ -8,6 +8,19 @@ export interface LobbyView {
   started: boolean;
   players: { id: number; name: string; connected: boolean; isAi: boolean }[];
   emotes: { id: string; playerId: number; emoji: string; ts: number }[];
+  chats: ChatMsg[];        // last ~30 messages
+  private: boolean;        // unlisted; only joinable via the room code
+  spectatorCount: number;  // currently-connected spectators — drives the "👁 N watching" pip
+}
+
+export interface ChatMsg {
+  id: string;
+  // playerId is the seat id (0..n-1) for active players, or -1 for a
+  // spectator. Name comes along for spectators since they have no seat row.
+  playerId: number;
+  name: string;
+  text: string;
+  ts: number;
 }
 
 export interface PublicRoom {
@@ -28,7 +41,7 @@ export type ServerMsg =
   | { t: 'ERR'; msg: string };
 
 export type ClientMsg =
-  | { t: 'CREATE'; name: string }
+  | { t: 'CREATE'; name: string; private?: boolean }
   | { t: 'JOIN'; code: string; name: string }
   | { t: 'RESUME'; code: string; token: string }
   | { t: 'SPECTATE'; code: string }
@@ -38,6 +51,7 @@ export type ClientMsg =
   | { t: 'START'; aiDifficulty?: AiDifficulty }
   | { t: 'ACT'; action: Action }
   | { t: 'EMOTE'; emoji: string }
+  | { t: 'CHAT'; text: string }
   | { t: 'PLAY_AGAIN' }
   | { t: 'DELETE_ROOM' }
   | { t: 'LEAVE' };
@@ -64,13 +78,17 @@ export interface NetworkConn {
 
 const SESSION_KEY = 'ph_session';
 
-function loadSession(): Session | null {
+/** Read the persisted session, if any. Exported so the menu can surface a
+ *  "Resume your game" CTA without opening a websocket. */
+export function loadSession(): Session | null {
   try {
     const raw = localStorage.getItem(SESSION_KEY);
     if (!raw) return null;
     return JSON.parse(raw) as Session;
   } catch { return null; }
 }
+export function clearSession() { try { localStorage.removeItem(SESSION_KEY); } catch { /* ignore */ } }
+
 function saveSession(s: Session | null) {
   try {
     if (s) localStorage.setItem(SESSION_KEY, JSON.stringify(s));

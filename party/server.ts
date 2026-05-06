@@ -32,6 +32,14 @@ interface Emote {
   ts: number;
 }
 
+interface ChatMsg {
+  id: string;
+  playerId: number;            // seat id, or -1 for spectator
+  name: string;
+  text: string;
+  ts: number;
+}
+
 interface Room {
   code: string;
   hostId: number;
@@ -39,11 +47,15 @@ interface Room {
   spectators: Set<Party.Connection>;
   state: GameState | null;
   emotes: Emote[];
+  chats: ChatMsg[];
   aiTimer?: ReturnType<typeof setTimeout>;
   turnTimer?: ReturnType<typeof setTimeout>;
   lastActivityAt: number;
   createdAt: number;
   abandonedAt?: number;
+  // Private rooms are unlisted — they don't appear in LIST_ROOMS responses.
+  // The 4-char room code is the credential; host shares it out-of-band.
+  private?: boolean;
 }
 
 interface ConnState {
@@ -79,8 +91,10 @@ export default class GameServer implements Party.Server {
         spectators: new Set(),
         state: r.state ?? null,
         emotes: r.emotes ?? [],
+        chats: Array.isArray(r.chats) ? r.chats : [],
         lastActivityAt: r.lastActivityAt ?? now,
         createdAt: r.createdAt ?? now,
+        private: r.private === true ? true : undefined,
       });
     }
   }
@@ -93,8 +107,10 @@ export default class GameServer implements Party.Server {
       players: r.players.map(p => ({ id: p.id, name: p.name, token: p.token, isAi: p.isAi })),
       state: r.state,
       emotes: r.emotes,
+      chats: r.chats,
       lastActivityAt: r.lastActivityAt,
       createdAt: r.createdAt,
+      private: r.private,
     }));
     this.party.storage.put('rooms', dump).catch(e => console.error('persist failed:', e));
   }
@@ -156,6 +172,9 @@ export default class GameServer implements Party.Server {
         isAi: p.isAi,
       })),
       emotes: room.emotes.slice(-5),
+      chats: room.chats.slice(-30),
+      private: !!room.private,
+      spectatorCount: room.spectators.size,
     };
   }
 
@@ -308,6 +327,7 @@ export default class GameServer implements Party.Server {
     switch (msg.t) {
       case 'CREATE': {
         const name = String(msg.name ?? '').slice(0, 24).trim() || 'Player 1';
+        const isPrivate = msg.private === true;
         const code = this.makeCode();
         const token = makeToken();
         const now = Date.now();
@@ -317,8 +337,10 @@ export default class GameServer implements Party.Server {
           spectators: new Set(),
           state: null,
           emotes: [],
+          chats: [],
           lastActivityAt: now,
           createdAt: now,
+          private: isPrivate || undefined,
         };
         this.rooms.set(code, room);
         sender.setState({ code, id: 0, spectator: false } satisfies ConnState);
@@ -334,6 +356,8 @@ export default class GameServer implements Party.Server {
         if (!room) return this.err(sender, `Room ${code} not found`);
         if (room.state) return this.err(sender, 'Game already started — try Spectate');
         if (room.players.length >= MAX_PLAYERS) return this.err(sender, 'Room full');
+        // Code-as-credential: private rooms are simply hidden from LIST_ROOMS;
+        // the join itself is unguarded once you have the code.
         const id = room.players.length;
         const name = String(msg.name ?? '').slice(0, 24).trim() || `Player ${id + 1}`;
         const token = makeToken();
@@ -451,6 +475,25 @@ export default class GameServer implements Party.Server {
         return;
       }
 
+      case 'CHAT': {
+        const ref = senderState; if (!ref) return;
+        const room = this.rooms.get(ref.code); if (!room) return;
+        const text = String(msg.text ?? '').slice(0, 240).trim();
+        if (!text) return;
+        const name = ref.spectator ? 'Spectator' : (room.players[ref.id]?.name ?? 'Player');
+        room.chats.push({
+          id: makeToken().slice(0, 8),
+          playerId: ref.spectator ? -1 : ref.id,
+          name,
+          text,
+          ts: Date.now(),
+        });
+        if (room.chats.length > 60) room.chats = room.chats.slice(-60);
+        this.broadcast(room);
+        this.persist();
+        return;
+      }
+
       case 'PLAY_AGAIN': {
         const ref = senderState; if (!ref || ref.spectator) return;
         const room = this.rooms.get(ref.code); if (!room) return;
@@ -494,14 +537,16 @@ export default class GameServer implements Party.Server {
       }
 
       case 'LIST_ROOMS': {
-        const list = [...this.rooms.values()].map(r => ({
-          code: r.code,
-          host: r.players[r.hostId]?.name ?? '?',
-          playerCount: r.players.length,
-          connectedHumans: r.players.filter(p => !p.isAi && p.conn !== null).length,
-          maxPlayers: MAX_PLAYERS,
-          started: r.state !== null,
-        }));
+        const list = [...this.rooms.values()]
+          .filter(r => !r.private)
+          .map(r => ({
+            code: r.code,
+            host: r.players[r.hostId]?.name ?? '?',
+            playerCount: r.players.length,
+            connectedHumans: r.players.filter(p => !p.isAi && p.conn !== null).length,
+            maxPlayers: MAX_PLAYERS,
+            started: r.state !== null,
+          }));
         this.send(sender, { t: 'ROOMS', rooms: list });
         return;
       }
@@ -531,6 +576,7 @@ export default class GameServer implements Party.Server {
     if (!room) return;
     if (ref.spectator) {
       room.spectators.delete(conn);
+      this.broadcast(room);
       return;
     }
     const player = room.players[ref.id];

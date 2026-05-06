@@ -32,6 +32,14 @@ interface Emote {
   ts: number;
 }
 
+interface ChatMsg {
+  id: string;
+  playerId: number;            // seat id, or -1 for spectator
+  name: string;
+  text: string;
+  ts: number;
+}
+
 interface Room {
   code: string;
   hostId: number;
@@ -39,11 +47,16 @@ interface Room {
   spectators: Set<WebSocket>;
   state: GameState | null;
   emotes: Emote[];
+  chats: ChatMsg[];            // last ~30 messages, oldest pruned on insert
   aiTimer?: NodeJS.Timeout;
   turnTimer?: NodeJS.Timeout;
   lastActivityAt: number;   // ms timestamp of last meaningful activity
   createdAt: number;
   abandonedAt?: number;     // when the last human disconnected from an in-progress game
+  // Private rooms are unlisted — they don't appear in LIST_ROOMS responses.
+  // Joining still works via the 4-char room code, which the host shares
+  // out-of-band (link / iMessage / etc). The code itself is the credential.
+  private?: boolean;
 }
 
 const ABANDON_GRACE_MS = 60 * 1000;
@@ -88,8 +101,10 @@ function persist() {
       players: r.players.map(p => ({ id: p.id, name: p.name, token: p.token, isAi: p.isAi })),
       state: r.state,
       emotes: r.emotes,
+      chats: r.chats,
       lastActivityAt: r.lastActivityAt,
       createdAt: r.createdAt,
+      private: r.private,
     }));
     writeFileSync(PERSIST_FILE, JSON.stringify(dump));
   } catch (e) {
@@ -113,8 +128,10 @@ function loadPersisted() {
         spectators: new Set(),
         state: r.state ?? null,
         emotes: r.emotes ?? [],
+        chats: Array.isArray(r.chats) ? r.chats : [],
         lastActivityAt,
         createdAt: r.createdAt ?? now,
+        private: r.private === true ? true : undefined,
       });
     }
     console.log(`[poophead] loaded ${rooms.size} persisted room(s)`);
@@ -167,6 +184,9 @@ function lobbyView(room: Room, viewerId: number) {
       isAi: p.isAi,
     })),
     emotes: room.emotes.slice(-5),
+    chats: room.chats.slice(-30),
+    private: !!room.private,
+    spectatorCount: room.spectators.size,
   };
 }
 
@@ -340,6 +360,7 @@ wss.on('connection', ws => {
     switch (msg.t) {
       case 'CREATE': {
         const name = String(msg.name ?? '').slice(0, 24).trim() || 'Player 1';
+        const isPrivate = msg.private === true;
         const code = makeCode();
         const token = makeToken();
         const now = Date.now();
@@ -350,8 +371,10 @@ wss.on('connection', ws => {
           spectators: new Set(),
           state: null,
           emotes: [],
+          chats: [],
           lastActivityAt: now,
           createdAt: now,
+          private: isPrivate || undefined,
         };
         rooms.set(code, room);
         socketToRoom.set(ws, { code, id: 0, spectator: false });
@@ -367,6 +390,9 @@ wss.on('connection', ws => {
         if (!room) return err(ws, `Room ${code} not found`);
         if (room.state) return err(ws, 'Game already started — try Spectate');
         if (room.players.length >= MAX_PLAYERS) return err(ws, 'Room full');
+        // No extra gate — the 4-char code IS the credential. Private rooms are
+        // simply hidden from LIST_ROOMS, so an attacker would have to brute-
+        // force the code (~1M space, room TTL caps the attempt window).
         const id = room.players.length;
         const name = String(msg.name ?? '').slice(0, 24).trim() || `Player ${id + 1}`;
         const token = makeToken();
@@ -495,6 +521,27 @@ wss.on('connection', ws => {
         return;
       }
 
+      case 'CHAT': {
+        const ref = socketToRoom.get(ws);
+        if (!ref) return;
+        const room = rooms.get(ref.code);
+        if (!room) return;
+        const text = String(msg.text ?? '').slice(0, 240).trim();
+        if (!text) return;
+        const name = ref.spectator ? 'Spectator' : (room.players[ref.id]?.name ?? 'Player');
+        room.chats.push({
+          id: makeToken().slice(0, 8),
+          playerId: ref.spectator ? -1 : ref.id,
+          name,
+          text,
+          ts: Date.now(),
+        });
+        if (room.chats.length > 60) room.chats = room.chats.slice(-60);
+        broadcast(room);
+        persist();
+        return;
+      }
+
       case 'PLAY_AGAIN': {
         const ref = socketToRoom.get(ws);
         if (!ref || ref.spectator) return;
@@ -541,14 +588,17 @@ wss.on('connection', ws => {
       }
 
       case 'LIST_ROOMS': {
-        const list = [...rooms.values()].map(r => ({
-          code: r.code,
-          host: r.players[r.hostId]?.name ?? '?',
-          playerCount: r.players.length,
-          connectedHumans: r.players.filter(p => !p.isAi && p.ws !== null).length,
-          maxPlayers: MAX_PLAYERS,
-          started: r.state !== null,
-        }));
+        // Private rooms are unlisted — the only way in is via the room code.
+        const list = [...rooms.values()]
+          .filter(r => !r.private)
+          .map(r => ({
+            code: r.code,
+            host: r.players[r.hostId]?.name ?? '?',
+            playerCount: r.players.length,
+            connectedHumans: r.players.filter(p => !p.isAi && p.ws !== null).length,
+            maxPlayers: MAX_PLAYERS,
+            started: r.state !== null,
+          }));
         send(ws, { t: 'ROOMS', rooms: list });
         return;
       }
@@ -581,6 +631,8 @@ wss.on('connection', ws => {
     if (!room) return;
     if (ref.spectator) {
       room.spectators.delete(ws);
+      // Broadcast so the spectator-count pip updates for everyone else.
+      broadcast(room);
       return;
     }
     const player = room.players[ref.id];

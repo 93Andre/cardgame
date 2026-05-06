@@ -65,6 +65,11 @@ export interface GameState {
   revealedPickup: { playerId: number; card: Card; ts: number } | null;
   stats: Record<number, PlayerStats>;
   aiDifficulty: AiDifficulty;
+  // Most recent player to put cards on the pile. Cleared when the pile is
+  // cleared (10 burn / 4-of-a-kind / pickup). Used to enable the "chain"
+  // rule: a player who just played can play another card of the same rank
+  // out-of-turn, racing the next player.
+  lastPlayerId: number | null;
 }
 
 export interface PlayerStats {
@@ -73,6 +78,7 @@ export interface PlayerStats {
   powerCards: number;    // 2/10/8/K/7/Joker count among played cards
   burns: number;         // burn events they triggered (10 or 4-of-a-kind)
   cuts: number;          // out-of-turn cut plays (Ultimate mode)
+  largestPile: number;   // size (in cards) of the biggest pile this player picked up
 }
 
 export type Action =
@@ -271,12 +277,13 @@ export function initialState(): GameState {
     revealedPickup: null,
     stats: {},
     aiDifficulty: 'normal',
+    lastPlayerId: null,
   };
 }
 
 const POWER_RANKS = new Set<Rank>(['2', '10', '8', 'K', '7', 'JK']);
 function emptyStats(): PlayerStats {
-  return { pickups: 0, cardsPlayed: 0, powerCards: 0, burns: 0, cuts: 0 };
+  return { pickups: 0, cardsPlayed: 0, powerCards: 0, burns: 0, cuts: 0, largestPile: 0 };
 }
 function bumpStats(state: GameState, playerId: number, patch: Partial<PlayerStats>): Record<number, PlayerStats> {
   const cur = state.stats[playerId] ?? emptyStats();
@@ -484,6 +491,10 @@ function postPlay(stateIn: GameState, playerIdx: number, sourceUsed: Source, pla
     sevenRestriction: sevenLock,
     selected: [],
     lastWasMine,
+    // If the pile was burned/cleared this turn there's nothing to chain on;
+    // otherwise mark the just-played player so they can race the next player
+    // with a same-rank chain card from their hand.
+    lastPlayerId: pileCleared ? null : playerIdx,
   };
 }
 
@@ -602,7 +613,14 @@ export function reducer(state: GameState, action: Action): GameState {
       const handBeforePickup = [...p.hand];
       p.hand = [...p.hand, ...pickedCards];
       players[state.current] = p;
-      const newStats = bumpStats(state, state.current, { pickups: 1 });
+      // bumpStats sums patch values; largestPile is a max-update so apply it
+      // separately after the bump so we don't double-count.
+      const bumped = bumpStats(state, state.current, { pickups: 1 });
+      const prevLargest = (state.stats[state.current] ?? emptyStats()).largestPile;
+      const newStats = {
+        ...bumped,
+        [state.current]: { ...bumped[state.current], largestPile: Math.max(prevLargest, pickedCards.length) },
+      };
 
       if (handBeforePickup.length === 0) {
         const log = logLine(state, `${p.name} picked up the pile (${pickedCards.length} cards). No hand cards to reveal.`);
@@ -611,7 +629,7 @@ export function reducer(state: GameState, action: Action): GameState {
         return {
           ...state, players, pile: [], selected: [], sevenRestriction: false, log, flippedCard: null,
           phase: 'pass', current, pendingReveal: null, revealedPickup: null, lastWasMine: false,
-          stats: newStats,
+          stats: newStats, lastPlayerId: null,
         };
       }
 
@@ -622,7 +640,7 @@ export function reducer(state: GameState, action: Action): GameState {
         pendingReveal: { cards: handBeforePickup },
         revealedPickup: null,
         lastWasMine: false,
-        stats: newStats,
+        stats: newStats, lastPlayerId: null,
       };
     }
 
@@ -672,7 +690,7 @@ export function reducer(state: GameState, action: Action): GameState {
         const current = nextActiveIndex(players, state.current, direction);
         return {
           ...state, players, pile: [], flippedCard: null, selected: [], sevenRestriction: false,
-          phase: 'pass', current, log, lastWasMine: false,
+          phase: 'pass', current, log, lastWasMine: false, lastPlayerId: null,
         };
       }
     }
@@ -715,22 +733,37 @@ export function cutTarget(pile: PileEntry[]): { rank: Rank; suit: Suit } | null 
   return { rank: top.effRank, suit: top.effSuit };
 }
 
-// All matching cards in player's HAND that could be used to cut. Hand-only per rules.
+// All cards in player's HAND that they can play out-of-turn right now.
+// Two flavors collapsed into one helper:
+//   • CHAIN  — the player who *just* played (state.lastPlayerId) can play
+//              another card of the same RANK as the pile top, in any mode.
+//              Models "I drew a 5 and the next player hasn't moved yet."
+//   • CUT    — Ultimate mode only: any other player with an exact RANK+SUIT
+//              match for the pile top can play it out-of-turn.
+// A player whose own turn it currently is doesn't need this — they just play.
 export function cutMatches(state: GameState, playerId: number): Card[] {
-  if (state.mode !== 'ultimate') return [];
   if (state.phase !== 'play') return [];
+  if (playerId === state.current) return [];
   const target = cutTarget(state.pile);
   if (!target) return [];
   const p = state.players[playerId];
   if (!p || p.out) return [];
-  return p.hand.filter(c => c.rank === target.rank && c.suit === target.suit);
+  // Chain takes priority: the just-played player gets rank-only matching.
+  if (state.lastPlayerId === playerId) {
+    return p.hand.filter(c => c.rank === target.rank);
+  }
+  // Otherwise only Ultimate's exact rank+suit cut applies.
+  if (state.mode === 'ultimate') {
+    return p.hand.filter(c => c.rank === target.rank && c.suit === target.suit);
+  }
+  return [];
 }
 
 function applyCut(state: GameState, cutterId: number, ids: string[]): GameState {
-  if (state.mode !== 'ultimate') return state;
   if (state.phase !== 'play') return state;
   if (ids.length === 0) return state;
   const matches = cutMatches(state, cutterId);
+  if (matches.length === 0) return state;
   const matchIds = new Set(matches.map(c => c.id));
   // Every id in the request must be a valid match in the cutter's hand.
   for (const id of ids) if (!matchIds.has(id)) return state;
@@ -749,10 +782,15 @@ function applyCut(state: GameState, cutterId: number, ids: string[]): GameState 
     pile = [...pile, { card: c, effRank: eff.effRank, effSuit: eff.effSuit }];
   }
 
-  // Now: the cutter is treated as the current player; postPlay handles burns/skip/etc.
-  // The originally-current player effectively gets skipped (postPlay advances from cutter).
+  // Distinguish chain (just-played player extending) from a true cut. A chain
+  // is treated like a normal play continuation — King reverses direction
+  // normally, no `cuts` stat bump. A cut counts toward the Ultimate stat.
+  const isChain = state.lastPlayerId === cutterId;
   const ranksSummary = cards.map(c => `${c.rank}${c.suit}`).join(' + ');
   const powerCount = cards.filter(c => POWER_RANKS.has(c.rank)).length;
+  const statPatch: Partial<PlayerStats> = isChain
+    ? { cardsPlayed: cards.length, powerCards: powerCount }
+    : { cardsPlayed: cards.length, powerCards: powerCount, cuts: 1 };
   const next: GameState = {
     ...state,
     players,
@@ -760,10 +798,12 @@ function applyCut(state: GameState, cutterId: number, ids: string[]): GameState 
     selected: [],
     sevenRestriction: false,
     current: cutterId,
-    stats: bumpStats(state, cutterId, { cardsPlayed: cards.length, powerCards: powerCount, cuts: 1 }),
-    log: logLine(state, `${cutter.name} CUT with ${ranksSummary}!`),
+    stats: bumpStats(state, cutterId, statPatch),
+    log: logLine(state, isChain
+      ? `${cutter.name} chained ${ranksSummary}.`
+      : `${cutter.name} CUT with ${ranksSummary}!`),
   };
-  return postPlay(next, cutterId, 'hand', cards, /* wasCut */ true);
+  return postPlay(next, cutterId, 'hand', cards, /* wasCut */ !isChain);
 }
 
 /* ----- AI ----- */
@@ -785,17 +825,17 @@ export function aiPickAction(state: GameState, aiId: number): Action | null {
     const choice = cards[Math.floor(Math.random() * cards.length)];
     return { type: 'REVEAL_CHOICE', id: choice.id };
   }
-  // Out-of-turn cuts (Ultimate mode): AI cuts whenever it can — it's a free play.
-  if (state.phase === 'play' && state.mode === 'ultimate' && state.current !== aiId) {
+  // Out-of-turn plays: cuts (Ultimate, exact match by anyone) and chains
+  // (any mode, rank match by the player who just played). AI takes them
+  // whenever available — it's a free play.
+  if (state.phase === 'play' && state.current !== aiId) {
     const matches = cutMatches(state, aiId);
     if (matches.length > 0) return { type: 'CUT', player: aiId, ids: matches.map(c => c.id) };
     return null;
   }
   if (state.phase === 'play' && state.current === aiId) {
-    if (state.mode === 'ultimate') {
-      const matches = cutMatches(state, aiId);
-      if (matches.length > 0) return { type: 'CUT', player: aiId, ids: matches.map(c => c.id) };
-    }
+    // (cutMatches returns [] for the active player by design — no need to
+    // check it here; same-rank plays go through the normal PLAY path.)
     const p = state.players[aiId];
     const src = activeSource(p, state.deck.length === 0);
     if (!src) return null;
@@ -903,10 +943,14 @@ export const HIDDEN_CARD = (id: string): Card => ({ id, rank: '2', suit: '★' }
 // - Pile is fully visible.
 // - Face-up is fully visible.
 export function redactForViewer(state: GameState, viewer: number): GameState {
-  // pendingReveal cards now come from the picker's private hand — visible only to them.
+  // Spectator view (viewer === -1): all hands revealed — this is a streaming
+  // view, the player is not in the game and there's no integrity concern.
+  // Face-down cards stay hidden (those are gameplay-private to their owner)
+  // and the deck order stays scrambled for everyone.
+  const isSpectator = viewer === -1;
   const pendingReveal = !state.pendingReveal
     ? null
-    : (state.current === viewer
+    : (state.current === viewer || isSpectator
         ? state.pendingReveal
         : { cards: state.pendingReveal.cards.map((_, i) => HIDDEN_CARD(`pr-${i}`)) });
   return {
@@ -915,7 +959,7 @@ export function redactForViewer(state: GameState, viewer: number): GameState {
       const isMe = p.id === viewer;
       return {
         ...p,
-        hand: isMe ? p.hand : p.hand.map((_, i) => HIDDEN_CARD(`hh-${p.id}-${i}`)),
+        hand: (isMe || isSpectator) ? p.hand : p.hand.map((_, i) => HIDDEN_CARD(`hh-${p.id}-${i}`)),
         faceDown: p.faceDown.map((_, i) => HIDDEN_CARD(`fd-${p.id}-${i}`)),
       };
     }),

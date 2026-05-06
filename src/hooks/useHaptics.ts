@@ -36,6 +36,28 @@ const vibrateMap: Record<HapticEvent, number | number[]> = {
   error: 50,
 };
 
+// Build a vibrate pattern that scales with the number of cards picked up. The
+// shape mirrors the audio: an initial "thump" (heavier for bigger pickups), N
+// staccato taps representing each card landing, and a final low boom for the
+// truly large ones. Pattern format is [vibrate, pause, vibrate, pause, ...].
+function pickupPattern(count: number): number[] {
+  const n = Math.max(1, Math.floor(count));
+  const taps = Math.min(8, n);
+  const out: number[] = [];
+  // Initial thump — 40ms baseline + 2ms per card (capped).
+  out.push(40 + Math.min(40, n * 2));
+  for (let i = 0; i < taps; i++) {
+    out.push(40);                                  // pause between taps
+    out.push(20 + Math.min(20, i * 3));            // tap, slightly longer each
+  }
+  // Big-pickup low boom.
+  if (n >= 15) {
+    out.push(60);   // pause
+    out.push(120);  // boom
+  }
+  return out;
+}
+
 let instance: WebHaptics | null = null;
 let initFailed = false;
 let listenersInstalled = false;
@@ -70,7 +92,10 @@ function getHaptics(): WebHaptics | null {
 }
 
 export function useHaptics() {
-  return useCallback((event: HapticEvent) => {
+  // Optional second arg `opts` lets the caller scale a haptic to context — at
+  // the moment only `pickup` consumes `count` (one buzz per card-ish, capped),
+  // but the API is open for similar treatment of other events later.
+  return useCallback((event: HapticEvent, opts?: { count?: number }) => {
     // Primary path: web-haptics (works cross-platform via vibrate or audio synthesis fallback).
     try {
       const wh = getHaptics();
@@ -83,7 +108,10 @@ export function useHaptics() {
     // and desktop browsers ignore it. Wrapped in try because some browsers throw on unsupported.
     try {
       if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
-        navigator.vibrate(vibrateMap[event]);
+        const pattern = event === 'pickup' && opts?.count
+          ? pickupPattern(opts.count)
+          : vibrateMap[event];
+        navigator.vibrate(pattern);
       }
     } catch { /* swallow */ }
   }, []);
