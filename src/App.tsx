@@ -184,13 +184,15 @@ class SoundEngine {
       case 'win': [523, 659, 784, 1046].forEach((f, i) => this.tone(f, 0.22, 'triangle', 0.18, i * 0.12)); break;
       case 'click': this.tone(880, 0.03, 'square', 0.06); break;
       case 'emote': this.tone(750, 0.06, 'triangle', 0.10); break;
-      // Your-turn chime: two-note ascending sine ding (C5 → G5) with a soft
-      // overtone sparkle. Distinct from any gameplay event so a backgrounded
-      // tab nudges the player without being mistaken for a 7-lock or play.
+      // Your-turn chime: bright ascending two-note ding (E5 → B5) plus a
+      // sparkle harmonic (E6). Higher frequencies than every other game
+      // sound so it cuts through any overlapping play / pickup / reveal
+      // sfx that fire on the same React tick. Gain is boosted a notch
+      // above other cues since it's the call-to-action.
       case 'yourTurn': {
-        this.tone(523.25, 0.13, 'sine',     0.18);          // C5 head
-        this.tone(783.99, 0.22, 'sine',     0.16, 0.07);    // G5 ascending
-        this.tone(1567.98, 0.18, 'triangle', 0.06, 0.07);   // soft sparkle harmonic
+        this.tone(659.25,  0.16, 'sine',     0.32);          // E5 head
+        this.tone(987.77,  0.26, 'sine',     0.28, 0.09);    // B5 ascending
+        this.tone(1318.51, 0.22, 'triangle', 0.12, 0.09);    // E6 sparkle
         break;
       }
     }
@@ -1616,17 +1618,24 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, fromDeckIds }:
   }, []);
   const turnElapsedMs = now - turnStartRef.current;
 
-  // Turn-alert chime: when it becomes the viewer's turn, play a short
-  // dedicated two-note ding so a backgrounded tab nudges the player. Distinct
-  // from every gameplay-event sound so it's never confused with a 7-lock or
-  // a normal play.
-  const wasMyTurnRef = useRef(false);
+  // Turn-alert chime: dedicated ding when state.current rotates to the viewer
+  // during the play phase. We track which `state.current` we last chimed for
+  // and clear it whenever it isn't our turn, so a round-trip (me → opp → me)
+  // chimes on every return. Crucially this also handles the swap→play edge
+  // case: if I was already "current" during swap, the boolean false→true
+  // edge wouldn't fire, but a (current === me) we haven't chimed for yet
+  // does fire correctly.
+  const lastChimedCurrentRef = useRef<number | null>(null);
   useEffect(() => {
-    if (isMyTurn && !wasMyTurnRef.current && state.phase === 'play') {
-      sfx.play('yourTurn');
-    }
-    wasMyTurnRef.current = isMyTurn;
-  }, [isMyTurn, state.phase]);
+    if (state.phase !== 'play') { lastChimedCurrentRef.current = null; return; }
+    if (!isMyTurn)              { lastChimedCurrentRef.current = null; return; }
+    if (lastChimedCurrentRef.current === state.current) return;
+    // Slight delay so the chime starts AFTER the previous player's 'play'
+    // sound peaks, instead of getting masked by it on the same React tick.
+    const t = setTimeout(() => sfx.play('yourTurn'), 180);
+    lastChimedCurrentRef.current = state.current;
+    return () => clearTimeout(t);
+  }, [isMyTurn, state.phase, state.current]);
 
   // Last-actor flash: track whose tile to pulse for 600ms. Parsed from the most
   // recent log line that begins with "<name> played/picked/flipped/cut". Cleared on
