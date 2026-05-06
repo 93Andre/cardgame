@@ -939,7 +939,9 @@ function StatusBar({ state, viewerId, isMyTurn }: { state: GameState; viewerId: 
   const p = state.players[state.current];
   const c = p ? colorFor(p.id) : null;
   return (
-    <div className="flex flex-wrap items-center gap-2 sm:gap-3 px-3 py-2 bg-white/80 border border-gray-300 rounded-lg text-xs sm:text-sm">
+    <div className="flex flex-wrap items-center gap-2 sm:gap-3 pl-20 sm:pl-24 pr-3 py-2 bg-white/80 border border-gray-300 rounded-lg text-xs sm:text-sm">
+      {/* pl-20/24 leaves room for the fixed top-left menu (and Ultimate pill
+          beneath it) so the status text doesn't run underneath them. */}
       <span className="flex items-center gap-1.5">
         {c && <span className={`inline-block w-2 h-2 rounded-full ${c.dot}`} />}
         <strong>{p?.name}</strong>'s turn{isMyTurn && <span className="ml-1 text-emerald-700 font-semibold">(your move)</span>}
@@ -2645,35 +2647,6 @@ function useEventEffects(log: string[], resetKey: any): { toasts: Toast[] } {
 
 /* ============== Local-mode App ============== */
 
-function LocalCutPromptScreen({ state, playerId, matches, onCut, onSkip }: {
-  state: GameState; playerId: number; matches: Card[];
-  onCut: () => void; onSkip: () => void;
-}) {
-  const p = state.players[playerId];
-  const c = colorFor(p.id);
-  return (
-    <div className="h-full flex flex-col items-center justify-center gap-5 p-6">
-      <h2 className="text-2xl sm:text-3xl font-bold text-center">
-        ✂ {p.name} can <span className={c.text}>CUT</span>!
-      </h2>
-      <p className="text-gray-700 text-sm text-center max-w-md">
-        Pass the device to {p.name}. They have an exact match for the top card.
-      </p>
-      <div className="flex gap-2">
-        {matches.map(card => <CardFace key={card.id} card={card} />)}
-      </div>
-      <div className="flex gap-3">
-        <button onClick={onCut} className="px-6 py-3 bg-fuchsia-600 hover:bg-fuchsia-700 text-white font-bold rounded-lg shadow">
-          Cut!
-        </button>
-        <button onClick={onSkip} className="px-6 py-3 bg-gray-300 hover:bg-gray-400 text-gray-800 rounded-lg">
-          Skip
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function LocalGame({ humans, ais, aiSpeed, aiDifficulty, onExit }: { humans: number; ais: number; aiSpeed: number; aiDifficulty: AiDifficulty; onExit: () => void }) {
   const init = useMemo(() => {
     const total = humans + ais;
@@ -2713,18 +2686,9 @@ function LocalGame({ humans, ais, aiSpeed, aiDifficulty, onExit }: { humans: num
     }
   }, [state.phase, state.current, state.players]);
 
-  // Per-pass skipped-by-human set (cleared on every state.pile change so each new pile event re-prompts).
-  const [skippedHumans, setSkippedHumans] = useState<Set<number>>(new Set());
-  const lastPileTopId = useRef<string | null>(null);
-  useEffect(() => {
-    const top = state.pile[state.pile.length - 1]?.card.id ?? null;
-    if (top !== lastPileTopId.current) {
-      lastPileTopId.current = top;
-      setSkippedHumans(new Set());
-    }
-  }, [state.pile]);
-
-  // Ultimate-mode cutters (in turn order from the player whose turn it is now).
+  // Ultimate-mode cutters: only AI cutters need detection at this layer (so the
+  // AI scheduler knows to fire a cut before the current player's normal turn).
+  // Human cuts are handled in-place via the in-hand glow + click-to-cut UX.
   const cuttersInOrder = useMemo<number[]>(() => {
     if (state.mode !== 'ultimate' || state.phase !== 'play') return [];
     const out: number[] = [];
@@ -2739,8 +2703,15 @@ function LocalGame({ humans, ais, aiSpeed, aiDifficulty, onExit }: { humans: num
   }, [state]);
 
   const aiCutterPending = cuttersInOrder.find(id => state.players[id].isAi);
-  const humanCutter = cuttersInOrder.find(id => !state.players[id].isAi && !skippedHumans.has(id));
-  const showHumanCutPrompt = aiCutterPending === undefined && humanCutter !== undefined;
+  const humanCutterPending = cuttersInOrder.find(id => !state.players[id].isAi);
+
+  // Hot-seat: if an AI is about to play and a *different* human has a cut match,
+  // switch the viewer to that human so the glowing card is visible in their hand.
+  useEffect(() => {
+    if (humanCutterPending !== undefined && state.players[state.current]?.isAi) {
+      setLocalViewerId(humanCutterPending);
+    }
+  }, [humanCutterPending, state.current, state.players]);
 
   // AI auto-step.
   useEffect(() => {
@@ -2759,13 +2730,16 @@ function LocalGame({ humans, ais, aiSpeed, aiDifficulty, onExit }: { humans: num
     const revealDelay = state.revealedPickup
       ? Math.max(0, REVEAL_DURATION_MS - (Date.now() - state.revealedPickup.ts))
       : 0;
+    // Give a HUMAN cutter ~1.8s to spot the glow + tap their card before the
+    // AI plays through. That's the price of removing the modal cut prompt.
+    const humanCutDelay = humanCutterPending !== undefined && aiId === state.current ? 1800 : 0;
     const baseDelay = (isCut ? 350 : 700) * aiSpeed;
     aiTimer.current = window.setTimeout(() => {
       const action = aiPickAction(state, aiId!);
       if (action) dispatch(action);
-    }, Math.max(baseDelay, revealDelay));
+    }, Math.max(baseDelay, revealDelay, humanCutDelay));
     return () => { if (aiTimer.current) clearTimeout(aiTimer.current); };
-  }, [state, aiCutterPending, aiSpeed]);
+  }, [state, aiCutterPending, humanCutterPending, aiSpeed]);
 
   // Skip the pass screen whenever the device doesn't actually need to change hands:
   //  - next player is AI, OR
@@ -2809,20 +2783,7 @@ function LocalGame({ humans, ais, aiSpeed, aiDifficulty, onExit }: { humans: num
   });
 
   let body: React.ReactNode;
-  if (showHumanCutPrompt && humanCutter !== undefined) {
-    body = (
-      <LocalCutPromptScreen
-        state={state}
-        playerId={humanCutter}
-        matches={cutMatches(state, humanCutter)}
-        onCut={() => {
-          const ids = cutMatches(state, humanCutter).map(c => c.id);
-          dispatch({ type: 'CUT', player: humanCutter, ids });
-        }}
-        onSkip={() => setSkippedHumans(s => new Set(s).add(humanCutter))}
-      />
-    );
-  } else {
+  {
     switch (state.phase) {
       case 'swap': body = <SwapScreen state={state} dispatch={dispatch} viewerId={null} />; break;
       case 'pass':
