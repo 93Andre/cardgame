@@ -565,48 +565,52 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
       className={`relative w-full mx-auto ${layout === 'desktop' ? 'flex-1' : ''}`}
       style={{ aspectRatio, maxWidth: 1100, minHeight, maxHeight }}
     >
-      <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full pointer-events-none overflow-visible">
-        {/* Dashed outline animates around the table in the current play direction. */}
-        <ellipse
-          cx="50" cy="50" rx="42" ry="40"
-          fill="none" stroke="rgba(120,120,120,0.35)" strokeWidth="0.5"
-          strokeDasharray="1.5 1.5"
-          className={direction === 1 ? 'table-flow-cw' : 'table-flow-ccw'}
-        />
-      </svg>
-
       <div className="absolute left-1/2 top-1 -translate-x-1/2 text-xl text-gray-500 select-none pointer-events-none">
         {direction === 1 ? '↻' : '↺'}
       </div>
 
-      {/* Subtle directional chevrons at cardinal points around the ellipse,
-          pointing along the current play direction so the flow of the game is
-          unmistakable at a glance. They use real DOM elements (not SVG) so the
-          chevron shape doesn't distort with the table's aspect ratio. The
-          `directionFlashKey` is appended to the React key so the elements
-          re-mount when a King reverses direction — replaying the flash
-          animation. */}
-      {[0, 1, 2, 3].map(i => {
-        const theta = i * 90;                                          // 0=N, 90=E, 180=S, 270=W
-        const xPct = 50 + Math.sin(theta * Math.PI / 180) * rx * 100;
-        const yPct = 50 - Math.cos(theta * Math.PI / 180) * ry * 100;
-        const rot = direction === 1 ? theta : theta + 180;             // tangent direction of motion
-        return (
-          <div
-            key={`flow-${i}-${directionFlashKey ?? 0}`}
-            className="absolute text-emerald-200 text-3xl sm:text-4xl select-none pointer-events-none table-flow-pulse table-flow-flip drop-shadow-[0_1px_2px_rgba(0,0,0,0.35)]"
-            style={{
-              left: `${xPct}%`,
-              top: `${yPct}%`,
-              transform: `translate(-50%, -50%) rotate(${rot}deg)`,
-              animationDelay: `${i * 0.6}s, ${i * 0.05}s`,
-            }}
-            aria-hidden
-          >
-            ➤
-          </div>
-        );
-      })}
+      {/* Direction-of-play track: a ring of small chevrons placed around the
+          ellipse, each rotated along the tangent so they all "point" the way
+          play is moving. A staggered opacity wave chases around the ring so the
+          flow is obvious even on a still screenshot. Real DOM elements (not
+          SVG textPath) so the chevron shape doesn't get distorted by the
+          table's non-uniform aspect ratio. `directionFlashKey` re-keys the
+          group so a King reversal replays the flash animation. */}
+      {(() => {
+        const N = 28;
+        // Direction of motion at parametric angle θ (measured CW from north on
+        // an ellipse with rx/ry semi-axes). dx/dθ ∝ cos θ, dy/dθ ∝ -sin θ when
+        // θ is measured CW from north. We need the screen-space angle of
+        // (cos θ * rx, sin θ * ry) → atan2(sin θ * ry, cos θ * rx). The tangent
+        // is the derivative: ( cos θ * rx, -sin θ * ry ) — but the visual
+        // "stretch" is already absorbed by rx/ry being expressed in % of width
+        // and height respectively, so a uniform tangent angle reads correctly.
+        return Array.from({ length: N }).map((_, i) => {
+          const theta = (i / N) * 360;
+          const xPct = 50 + Math.sin(theta * Math.PI / 180) * rx * 100;
+          const yPct = 50 - Math.cos(theta * Math.PI / 180) * ry * 100;
+          const rot = direction === 1 ? theta : theta + 180;
+          // Chase: each chevron's pulse is offset by its position around the
+          // ring, so the bright spot traces a lap of the table per cycle.
+          const phaseDelay = -(i / N) * 2.4;
+          const flipDelay = i * 0.012;
+          return (
+            <div
+              key={`chevron-${i}-${directionFlashKey ?? 0}`}
+              className="absolute text-emerald-100 text-sm sm:text-base font-bold select-none pointer-events-none table-flow-chase table-flow-flip drop-shadow-[0_1px_2px_rgba(0,0,0,0.45)]"
+              style={{
+                left: `${xPct}%`,
+                top: `${yPct}%`,
+                transform: `translate(-50%, -50%) rotate(${rot}deg)`,
+                animationDelay: `${phaseDelay}s, ${flipDelay}s`,
+              }}
+              aria-hidden
+            >
+              ›
+            </div>
+          );
+        });
+      })()}
 
       {players.map(p => {
         // Player slots are FIXED relative to the viewer — direction reversal only flips the

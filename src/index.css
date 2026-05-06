@@ -2,21 +2,14 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Animated dashed table outline. The ellipse uses stroke-dasharray="1.5 1.5"
- * (period 3 in user units), so shifting dashoffset by ±3 advances exactly one cycle —
- * giving a clean infinite flow without visible seams. */
-@keyframes table-flow-cw  { to { stroke-dashoffset: -3; } }
-@keyframes table-flow-ccw { to { stroke-dashoffset:  3; } }
-.table-flow-cw  { animation: table-flow-cw  2.4s linear infinite; }
-.table-flow-ccw { animation: table-flow-ccw 2.4s linear infinite; }
-
-/* Soft "chasing" pulse for the directional chevrons placed around the table.
- * Animates opacity only so the per-chevron rotate transform is preserved. */
-@keyframes table-flow-pulse {
-  0%, 100% { opacity: 0.45; }
+/* Chasing wave for the chevron ring. Each chevron's animation-delay is offset
+ * by its position around the ellipse so the brightness peak traces a lap per
+ * cycle — making the direction of play unmistakable on a still screenshot. */
+@keyframes table-flow-chase {
+  0%, 100% { opacity: 0.30; }
   50%      { opacity: 0.95; }
 }
-.table-flow-pulse { animation: table-flow-pulse 2.2s ease-in-out infinite; }
+.table-flow-chase { animation: table-flow-chase 2.4s ease-in-out infinite; }
 
 /* King reversal: brief whoosh as the chevrons flip direction. */
 @keyframes table-flow-flip {
