@@ -3619,15 +3619,28 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
               };
               return (
                 <div
-                  className="flex flex-col items-stretch gap-1 overflow-x-auto overflow-y-visible -mx-3 sm:-mx-4 px-3 sm:px-4 py-2"
-                  style={{ scrollbarWidth: 'thin' }}
+                  className="flex flex-col items-stretch gap-1 overflow-x-auto overflow-y-visible -mx-3 sm:-mx-4 px-4 sm:px-6 py-2"
+                  // scroll-padding-inline gives the user breathing room when
+                  // they scroll to either end (the leading/trailing card sits
+                  // a card-shoulder away from the clip edge instead of being
+                  // flush against it).
+                  style={{ scrollbarWidth: 'thin', scrollPaddingInline: '1rem' }}
                 >
                   <LayoutGroup>
                     {rows.map((row, rIdx) => {
                       const rowOverlap = overlapForRow(row.length);
                       const baseIndex = rIdx === 0 ? 0 : rows[0].length;
                       return (
-                        <div key={rIdx} className="flex justify-center items-end">
+                        <div
+                          key={rIdx}
+                          className="flex items-end"
+                          // `safe center` keeps the row visually centered when
+                          // it FITS, but falls back to flex-start when it
+                          // overflows. Without `safe`, plain `center` pushes
+                          // the leading edge past scroll-origin so the leftmost
+                          // card is unreachable / visually clipped.
+                          style={{ justifyContent: 'safe center' }}
+                        >
                           {row.map((c, i) => renderCard(c, i, rowOverlap, baseIndex))}
                         </div>
                       );
