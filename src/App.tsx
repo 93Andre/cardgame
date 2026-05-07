@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { AnimatePresence, motion, LayoutGroup } from 'framer-motion';
+import { AnimatePresence, motion, LayoutGroup, useReducedMotion } from 'framer-motion';
 import {
   type Action,
   type Card,
@@ -345,7 +345,7 @@ const POWER_CARD_ACCENTS: Partial<Record<Rank, { bar: string; tip: string }>> = 
 function CardFace({ card, size, small, hidden, selected, onClick, onDoubleClick, dim, jokerEffRank, magnifyOnHover, cuttable, chainable }: CardFaceProps) {
   const resolvedSize: 'tiny' | 'small' | 'normal' = size ?? (small ? 'small' : 'normal');
   const w =
-    resolvedSize === 'tiny'  ? 'w-7 h-10 text-[8px]' :
+    resolvedSize === 'tiny'  ? 'w-6 h-9 text-[7px] sm:w-7 sm:h-10 sm:text-[8px]' :
     resolvedSize === 'small' ? 'w-9 h-12 text-[10px] sm:w-10 sm:h-14 sm:text-xs' :
                                'w-14 h-20 text-sm sm:w-16 sm:h-24 sm:text-base';
   const hoverCls = magnifyOnHover ? 'hover:scale-[2] hover:z-30 hover:shadow-2xl' : '';
@@ -359,13 +359,51 @@ function CardFace({ card, size, small, hidden, selected, onClick, onDoubleClick,
       : '';
   const base = `relative ${w} rounded-md border shadow-sm flex flex-col items-center justify-center select-none transition-all duration-150 ${hoverCls} ${cutCls}`;
   if (hidden || !card) {
+    // Card back: replaces the previous literal "PH" placeholder with a
+    // proper card-back pattern. Layered:
+    //   (1) deep indigo→violet gradient body
+    //   (2) inset bezel ring so the back reads as a card edge, not a chip
+    //   (3) chevron lattice via repeating-linear-gradient — the classic
+    //       playing-card "fabric" feel without a raster asset
+    //   (4) wordmark monogram "L" centered, low-opacity, so each back is
+    //       quietly branded without competing with the table.
+    // Same semantics as before (clickable, selected lift) but no cryptic
+    // letters. Aria-label keeps it identified for screen readers.
     return (
       <div
         onClick={onClick}
         onDoubleClick={onDoubleClick}
-        className={`${base} bg-indigo-600 border-indigo-800 text-white ${onClick ? 'cursor-pointer' : ''} ${selected ? '-translate-y-2 ring-2 ring-amber-400' : ''}`}
+        aria-label="Face-down card"
+        className={`${base} ${onClick ? 'cursor-pointer' : ''} ${selected ? '-translate-y-2 ring-2 ring-amber-400' : ''} text-white border-indigo-900/60 overflow-hidden`}
+        style={{
+          backgroundImage: [
+            // chevron lattice
+            'repeating-linear-gradient(135deg, rgba(255,255,255,0.10) 0 6px, transparent 6px 12px)',
+            'repeating-linear-gradient( 45deg, rgba(0,0,0,0.18)    0 6px, transparent 6px 12px)',
+            // body gradient
+            'linear-gradient(135deg, #4c1d95 0%, #3730a3 60%, #1e1b4b 100%)',
+          ].join(', '),
+        }}
       >
-        <div className="font-black tracking-widest opacity-80">PH</div>
+        {/* Inset bezel — a thin lighter outline 2px in from the edge so the
+            back has the depth of a real card. */}
+        <div
+          className="absolute inset-[3px] rounded-[3px] pointer-events-none"
+          style={{ boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.18), inset 0 0 0 2px rgba(0,0,0,0.20)' }}
+        />
+        {/* Monogram — keeps the Latrine identity quietly present. Smaller
+            on tiny/small to avoid crowding. */}
+        <div
+          className={`relative font-black tracking-tighter select-none ${
+            resolvedSize === 'tiny' ? 'text-base' : resolvedSize === 'small' ? 'text-xl' : 'text-3xl'
+          }`}
+          style={{
+            color: 'rgba(255,255,255,0.85)',
+            textShadow: '0 1px 0 rgba(0,0,0,0.45), 0 0 14px rgba(167,139,250,0.55)',
+          }}
+        >
+          L
+        </div>
       </div>
     );
   }
@@ -465,6 +503,114 @@ function HandStack({ count }: { count: number }) {
   );
 }
 
+// CompactCardRow — face-up cards + a face-down `×N` pill on a single row,
+// with a 600ms "promotion" animation when face-up just emptied (the player
+// ran out of their face-up row and is about to play from face-down). The
+// pill scales up + glows + pulses once, then settles in place.
+function CompactCardRow({
+  player, selectedFaceUpIds, faceUpClickable, onFaceUpClick, faceDownClickable, onFaceDownClick,
+}: {
+  player: Player;
+  selectedFaceUpIds?: Set<string>;
+  faceUpClickable?: boolean;
+  onFaceUpClick?: (id: string) => void;
+  faceDownClickable?: boolean;
+  onFaceDownClick?: (id: string) => void;
+}) {
+  // Track when face-up went from non-empty → empty so we can flag a brief
+  // "your face-down is up next" highlight on the pill. Resets after 1.2s.
+  const prevFaceUpRef = useRef(player.faceUp.length);
+  const [promoteKey, setPromoteKey] = useState(0);
+  useEffect(() => {
+    const prev = prevFaceUpRef.current;
+    const cur = player.faceUp.length;
+    if (prev > 0 && cur === 0 && player.faceDown.length > 0) {
+      setPromoteKey(k => k + 1);
+    }
+    prevFaceUpRef.current = cur;
+  }, [player.faceUp.length, player.faceDown.length]);
+
+  const noCards = player.faceUp.length === 0 && player.faceDown.length === 0;
+  const fdCount = player.faceDown.length;
+  const promoting = promoteKey > 0; // becomes true once and stays — the spring uses key for replay
+
+  return (
+    // Single horizontal row: face-up cards on the left, face-down ×N pill
+    // tight against them on the right. No flex-wrap on the outer row so
+    // the pill never drops to its own line — that's the whole point of
+    // collapsing 3 card-backs into a pill on mobile.
+    <div className="flex items-center gap-1">
+      {/* Face-up cards. shrink-0 so the box claims its full content width
+          — without it, flex would shrink the box below the cards' visible
+          width and the pill would start overlapping the rightmost card. */}
+      <div className="flex gap-0.5 shrink-0">
+        {player.faceUp.map(c2 => (
+          <AnimatedCard
+            key={c2.id} layoutId={c2.id} card={c2} size="tiny" magnifyOnHover
+            selected={selectedFaceUpIds?.has(c2.id)}
+            onClick={faceUpClickable && onFaceUpClick ? () => onFaceUpClick(c2.id) : undefined}
+          />
+        ))}
+        {noCards && <span className="text-[9px] text-gray-500 italic">no cards</span>}
+      </div>
+
+      {/* Face-down pill — single mini card-back + ×N badge. When the
+          face-down phase becomes interactive (clickable), expand back to
+          three real card-backs so the player can tap each one. */}
+      {fdCount > 0 && (
+        faceDownClickable && onFaceDownClick ? (
+          <div className="flex gap-0.5 flex-wrap">
+            {player.faceDown.map(c2 => (
+              <CardFace key={c2.id} size="tiny" hidden onClick={() => onFaceDownClick(c2.id)} />
+            ))}
+          </div>
+        ) : (
+          <motion.div
+            key={`fd-pill-${promoteKey}`}
+            initial={promoting ? { scale: 0.8, opacity: 0.6 } : false}
+            animate={promoting
+              ? { scale: [0.8, 1.18, 1], opacity: [0.6, 1, 1] }
+              : { scale: 1, opacity: 1 }}
+            transition={{ duration: 0.6, times: [0, 0.55, 1], ease: 'easeOut' }}
+            className="relative flex items-center shrink-0"
+            title={`${fdCount} face-down card${fdCount === 1 ? '' : 's'}`}
+            aria-label={`${fdCount} face-down cards`}
+          >
+            {/* Render N actual card-backs heavily overlapped (each peeks
+                by ~6px). Reads as a real stack of face-down cards rather
+                than a count badge, but still occupies only ~36px total
+                width for 3 cards thanks to the negative margins.
+                Slight rotation per card sells the "hand of cards" look. */}
+            {Array.from({ length: fdCount }).map((_, i) => (
+              <div
+                key={`fd-mini-${i}`}
+                style={{
+                  marginLeft: i === 0 ? 0 : -18,
+                  transform: `rotate(${(i - (fdCount - 1) / 2) * 5}deg)`,
+                  zIndex: i,
+                }}
+              >
+                <CardFace size="tiny" hidden />
+              </div>
+            ))}
+            {/* Promotion glow — a soft amber ring that fades out shortly
+                after face-up cleared. Visually "promotes" the pill. */}
+            {promoting && (
+              <motion.span
+                key={`glow-${promoteKey}`}
+                initial={{ opacity: 0.85, scale: 0.9 }}
+                animate={{ opacity: 0, scale: 1.5 }}
+                transition={{ duration: 0.9, ease: 'easeOut' }}
+                className="absolute inset-0 rounded-md ring-2 ring-amber-400 pointer-events-none"
+              />
+            )}
+          </motion.div>
+        )
+      )}
+    </div>
+  );
+}
+
 function PlayerArea({ player, isCurrent, isViewer, isSpectatorFocus, onSpectatorFocus, compact, faceDownClickable, onFaceDownClick, emotes,
   faceUpClickable, onFaceUpClick, selectedFaceUpIds, turnElapsedMs, recentlyActed, avatar }: {
   player: Player; isCurrent: boolean; isViewer: boolean; compact?: boolean;
@@ -479,20 +625,37 @@ function PlayerArea({ player, isCurrent, isViewer, isSpectatorFocus, onSpectator
   avatar?: string | null;             // avatar key for the small pip beside the name
 }) {
   const c = colorFor(player.id);
+  // Register this tile's screen-centre so the deck-draw overlay can fly
+  // cards directly to it. Re-measured on resize/scroll because the table
+  // layout reflows on viewport changes. Cleanup nulls the entry so a
+  // departed seat doesn't leave stale coords behind.
+  const tileRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const measure = () => registerPlayerPos(player.id, tileRef.current);
+    measure();
+    window.addEventListener('resize', measure);
+    window.addEventListener('scroll', measure, true);
+    return () => {
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('scroll', measure, true);
+      registerPlayerPos(player.id, null);
+    };
+  }, [player.id]);
   // Compact mode: tighter padding, smaller text, face-up + face-down rendered side-by-side
   // in a single row so the tile stays short enough to fit around the table on mobile.
   return (
     <div
+      ref={tileRef}
       onClick={onSpectatorFocus}
       role={onSpectatorFocus ? 'button' : undefined}
       aria-pressed={onSpectatorFocus ? isSpectatorFocus : undefined}
-      className={`relative ${compact ? 'p-1.5' : 'p-2 sm:p-3'} rounded-lg border-2 ${
+      className={`relative ${compact ? 'p-0.5 sm:p-1.5' : 'p-2 sm:p-3'} rounded-lg ${compact ? 'border sm:border-2' : 'border-2'} ${
         isSpectatorFocus
           ? 'border-violet-400 bg-violet-50 ring-2 ring-violet-400 shadow-[0_0_18px_rgba(167,139,250,0.45)]'
           : isCurrent
             ? `${c.border} ${c.bg} ring-2 ${c.ring} active-player-glow`
             : 'border-gray-300 bg-white/85'
-      } ${recentlyActed ? 'player-acted-pulse' : ''} ${onSpectatorFocus ? 'cursor-pointer hover:ring-2 hover:ring-violet-300 transition-shadow' : ''} flex flex-col ${compact ? 'gap-1' : 'gap-2'} min-w-0 transition-transform duration-300 ${isCurrent && !isSpectatorFocus ? 'scale-[1.04]' : ''}`}>
+      } ${recentlyActed ? 'player-acted-pulse' : ''} ${onSpectatorFocus ? 'cursor-pointer hover:ring-2 hover:ring-violet-300 transition-shadow' : ''} flex flex-col ${compact ? 'gap-0.5 sm:gap-1' : 'gap-2'} min-w-0 transition-transform duration-300 ${isCurrent && !isSpectatorFocus ? 'scale-[1.04]' : ''}`}>
       {/* Turn-speed indicator: appears above the current player's tile after 15s of thinking,
           fills toward the 30s server-side auto-pickup cutoff. */}
       {isCurrent && typeof turnElapsedMs === 'number' && turnElapsedMs > 15000 && (
@@ -507,51 +670,46 @@ function PlayerArea({ player, isCurrent, isViewer, isSpectatorFocus, onSpectator
           />
         </div>
       )}
-      <div className={`flex items-center justify-between ${compact ? 'gap-1' : 'gap-2'}`}>
-        <span className={`font-semibold flex items-center gap-1.5 truncate ${compact ? 'text-[11px]' : ''}`}>
+      <div className={`flex items-center justify-between min-w-0 ${compact ? 'gap-1' : 'gap-2'}`}>
+        <span className={`font-semibold flex items-center gap-1 sm:gap-1.5 min-w-0 ${compact ? 'text-[10px] sm:text-[11px]' : ''}`}>
           {/* Active-player avatar gets a small scale-up so their seat reads
-              like a spotlit stage rather than a static tile. */}
-          <span className={`inline-flex transition-transform duration-300 ${isCurrent ? 'scale-110' : ''}`}>
+              like a spotlit stage rather than a static tile. The compact
+              variant uses a smaller wrapper on mobile to recover horizontal
+              space — Avatar's `sm` is 28px; this clamps it to 22px. */}
+          <span className={`inline-flex shrink-0 transition-transform duration-300 ${isCurrent ? 'scale-110' : ''} ${compact ? '[&>div]:w-[22px] [&>div]:h-[22px] [&>div]:text-sm sm:[&>div]:w-7 sm:[&>div]:h-7 sm:[&>div]:text-base' : ''}`}>
             <Avatar avatar={avatar} name={player.name} size="sm" />
           </span>
+          {/* Allow short names ("AI 1", "Player 1") to render in full on
+              compact tiles. Only truncate when the rendered name would
+              overflow — `truncate` here clamps to one line but the parent
+              `min-w-0` lets the name claim available width before the
+              hand-count chip wins. */}
           <span className="truncate">{player.name}</span>
-          {!compact && player.isAi && <span className="text-[10px] px-1 py-0.5 bg-gray-200 rounded">AI</span>}
-          {!compact && isViewer && <span className="text-[10px] text-emerald-700">(you)</span>}
+          {!compact && player.isAi && <span className="text-[10px] px-1 py-0.5 bg-gray-200 rounded shrink-0">AI</span>}
+          {!compact && isViewer && <span className="text-[10px] text-emerald-700 shrink-0">(you)</span>}
         </span>
-        <span className="flex items-center gap-1 whitespace-nowrap">
+        <span className="flex items-center gap-1 whitespace-nowrap shrink-0">
           <HandStack count={player.hand.length} />
           {player.out && player.finishPos !== null && <RankMedal pos={player.finishPos} />}
         </span>
       </div>
       {compact ? (
-        <div className="flex gap-1 items-center justify-between">
-          <div className="flex gap-0.5">
-            {player.faceUp.map(c2 => (
-              <AnimatedCard
-                key={c2.id} layoutId={c2.id} card={c2} size="tiny" magnifyOnHover
-                selected={selectedFaceUpIds?.has(c2.id)}
-                onClick={faceUpClickable && onFaceUpClick ? () => onFaceUpClick(c2.id) : undefined}
-              />
-            ))}
-            {player.faceUp.length === 0 && player.faceDown.length === 0 && (
-              <span className="text-[9px] text-gray-500 italic">no cards</span>
-            )}
-          </div>
-          {player.faceDown.length > 0 && (
-            faceDownClickable && onFaceDownClick ? (
-              <div className="flex gap-0.5">
-                {player.faceDown.map(c2 => (
-                  <CardFace key={c2.id} size="tiny" hidden onClick={() => onFaceDownClick(c2.id)} />
-                ))}
-              </div>
-            ) : (
-              <span className="flex items-center gap-0.5 text-[11px] text-gray-600">
-                <span className="inline-block w-3 h-4 rounded-sm bg-indigo-600 border border-indigo-800" />
-                <span className="font-bold">×{player.faceDown.length}</span>
-              </span>
-            )
-          )}
-        </div>
+        // Compact tile: face-up cards + a small face-down `×N` pill on the
+        // same row. The pill collapses 3 card-backs into a single mini-card
+        // glyph + count, recovering vertical space vs the previous
+        // stacked-row layout. When face-up empties out and face-down is
+        // about to take over (the player ran out of face-up), we animate
+        // the pill *promoting* into the face-up slot for a beat — so the
+        // transition feels like the deck is sliding forward, not just
+        // disappearing.
+        <CompactCardRow
+          player={player}
+          selectedFaceUpIds={selectedFaceUpIds}
+          faceUpClickable={faceUpClickable}
+          onFaceUpClick={onFaceUpClick}
+          faceDownClickable={faceDownClickable}
+          onFaceDownClick={onFaceDownClick}
+        />
       ) : (
         <>
           <div className="flex gap-1 flex-wrap">
@@ -826,11 +984,18 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
                   rotate: jitter * 2,
                 }}
                 transition={{ duration: flightDur, delay, ease: [0.4, 0.0, 0.2, 1] }}
-                className="absolute pointer-events-none w-10 h-14 sm:w-12 sm:h-16 rounded-md bg-indigo-600 border border-indigo-800 shadow-lg flex items-center justify-center text-[10px] font-black tracking-widest text-white/85"
-                style={{ zIndex: 30 }}
+                className="absolute pointer-events-none w-10 h-14 sm:w-12 sm:h-16 rounded-md border border-indigo-900/60 shadow-lg flex items-center justify-center text-[14px] font-black tracking-tighter text-white/85 overflow-hidden"
+                style={{
+                  zIndex: 30,
+                  backgroundImage: [
+                    'repeating-linear-gradient(135deg, rgba(255,255,255,0.10) 0 5px, transparent 5px 10px)',
+                    'repeating-linear-gradient( 45deg, rgba(0,0,0,0.18)    0 5px, transparent 5px 10px)',
+                    'linear-gradient(135deg, #4c1d95 0%, #3730a3 60%, #1e1b4b 100%)',
+                  ].join(', '),
+                }}
                 aria-hidden
               >
-                PH
+                <span style={{ textShadow: '0 1px 0 rgba(0,0,0,0.45), 0 0 8px rgba(167,139,250,0.55)' }}>L</span>
               </motion.div>
             );
           });
@@ -878,7 +1043,7 @@ function CardStack({ count, top, layerCards, emptyLabel, tone = 'normal' }: {
           >
             {layerCardEntry
               ? <CardFace card={layerCardEntry.card} jokerEffRank={layerCardEntry.effRank} magnifyOnHover />
-              : <div className={`w-14 h-20 sm:w-16 sm:h-24 rounded-md border ${fallbackCls}`} />
+              : <div className={`w-12 h-[68px] sm:w-16 sm:h-24 rounded-md border ${fallbackCls}`} />
             }
           </div>
         );
@@ -886,7 +1051,7 @@ function CardStack({ count, top, layerCards, emptyLabel, tone = 'normal' }: {
       <div className="absolute top-0 left-0">
         {count > 0
           ? (top ?? <CardFace hidden />)
-          : <div className="w-14 h-20 sm:w-16 sm:h-24 rounded-md border-2 border-dashed border-gray-400 flex items-center justify-center text-[10px] text-gray-400">{emptyLabel ?? 'empty'}</div>}
+          : <div className="w-12 h-[68px] sm:w-16 sm:h-24 rounded-md border-2 border-dashed border-gray-400 flex items-center justify-center text-[10px] text-gray-400">{emptyLabel ?? 'empty'}</div>}
       </div>
     </div>
   );
@@ -931,13 +1096,33 @@ function CenterPiles({ deckCount, pile, burnedCount, lastBurnSize }: {
     prevBurned.current = burnedCount;
   }, [burnedCount]);
 
+  // Compact pile counter — icon + number on a single line, instead of the
+  // verbose "deck: N" / "pile: N" / "burned: N" labels that ate vertical
+  // space on small viewports. Tabular-nums keeps the digits aligned as
+  // counts change.
+  const Counter = ({ icon, label, n, tone }: { icon: string; label: string; n: number; tone?: string }) => (
+    <span
+      className={`text-[11px] sm:text-xs font-semibold tabular-nums drop-shadow-[0_1px_2px_rgba(0,0,0,0.7)] flex items-center gap-1 ${tone ?? 'text-white/90'}`}
+      title={`${label}: ${n}`}
+    >
+      <span aria-hidden>{icon}</span>
+      <span>{n}</span>
+    </span>
+  );
+
   return (
-    <div className="relative flex items-end gap-5 sm:gap-7 justify-center">
+    // Counters now render ABOVE each card stack (was below). With the
+    // tighter mobile layout the bottom seats sit close to the centre piles
+    // and the below-card labels (`📰 51` / `📥 0` / `BURNED 0`) bled into
+    // the top of those tiles. items-end on the parent still aligns card
+    // bottoms; the column flex order just lifts the counter off the seam.
+    <div className="relative flex items-end gap-3 sm:gap-7 justify-center">
       <div className="flex flex-col items-center gap-1" ref={deckRef}>
+        <Counter icon="🂠" label="deck" n={deckCount} />
         <CardStack count={deckCount} />
-        <span className="text-xs font-semibold text-white/90 tabular-nums drop-shadow-[0_1px_2px_rgba(0,0,0,0.7)]">deck: {deckCount}</span>
       </div>
       <div className="flex flex-col items-center gap-1 relative">
+        <Counter icon="🃟" label="pile" n={pile.length} />
         <CardStack
           count={pile.length}
           layerCards={pile.slice(0, -1)}
@@ -950,7 +1135,6 @@ function CenterPiles({ deckCount, pile, burnedCount, lastBurnSize }: {
           }
           emptyLabel="empty"
         />
-        <span className="text-xs font-semibold text-white/90 tabular-nums drop-shadow-[0_1px_2px_rgba(0,0,0,0.7)]">pile: {pile.length}</span>
 
         {/* Cards flying from pile → burn pile (one per burn event) */}
         {burnFlight && Array.from({ length: burnFlight.count }).map((_, i) => (
@@ -972,17 +1156,40 @@ function CenterPiles({ deckCount, pile, burnedCount, lastBurnSize }: {
         ))}
       </div>
       <div className="flex flex-col items-center gap-1 relative">
+        <span
+          className="text-[11px] sm:text-xs font-semibold tabular-nums drop-shadow-[0_1px_2px_rgba(0,0,0,0.7)] flex items-center gap-1 text-rose-200"
+          title={`burned: ${burnedCount}`}
+        >
+          <span className="text-rose-200/70 uppercase tracking-wider text-[9px] sm:text-[10px]">burned</span>
+          <span>{burnedCount}</span>
+        </span>
         <CardStack
           count={burnedCount}
           tone="burned"
           top={
-            <div className="relative w-14 h-20 sm:w-16 sm:h-24 rounded-md border border-rose-700 bg-rose-500 shadow-sm flex items-center justify-center text-white">
-              <span className="font-black tracking-widest opacity-70 text-xs sm:text-sm">×</span>
+            // Burned-pile glyph: glyph-less rose card-back. The rose tone +
+            // stacked card-backs underneath already communicate "burned"
+            // — no need for an icon on the face.
+            <div
+              className="relative w-12 h-[68px] sm:w-16 sm:h-24 rounded-md border border-rose-700/70 shadow-sm overflow-hidden"
+              style={{
+                backgroundImage: [
+                  'repeating-linear-gradient(135deg, rgba(255,255,255,0.10) 0 6px, transparent 6px 12px)',
+                  'repeating-linear-gradient( 45deg, rgba(0,0,0,0.18)    0 6px, transparent 6px 12px)',
+                  'linear-gradient(135deg, #f43f5e 0%, #be123c 60%, #7f1d1d 100%)',
+                ].join(', '),
+              }}
+            >
+              <div
+                className="absolute inset-[3px] rounded-[3px] pointer-events-none"
+                style={{ boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.18), inset 0 0 0 2px rgba(0,0,0,0.20)' }}
+              />
             </div>
           }
           emptyLabel="empty"
         />
-        {/* A single soft rose ring expands briefly on each burn — replaces the old fire+embers fanfare. */}
+        {/* A single soft rose ring expands briefly on each burn — replaces the old fire+embers fanfare.
+            bottom-0 (was top-0) keeps the flash aligned with the card now that the counter sits above. */}
         <AnimatePresence>
           {lastBurnSize > 0 && (
             <motion.div
@@ -991,11 +1198,10 @@ function CenterPiles({ deckCount, pile, burnedCount, lastBurnSize }: {
               animate={{ opacity: 0, scale: 1.6 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.8, ease: 'easeOut' }}
-              className="absolute top-0 w-14 h-20 sm:w-16 sm:h-24 rounded-md border-2 border-rose-500 pointer-events-none"
+              className="absolute bottom-0 w-12 h-[68px] sm:w-16 sm:h-24 rounded-md border-2 border-rose-500 pointer-events-none"
             />
           )}
         </AnimatePresence>
-        <span className="text-xs font-semibold text-white/90 tabular-nums drop-shadow-[0_1px_2px_rgba(0,0,0,0.7)]">burned: {burnedCount}</span>
       </div>
     </div>
   );
@@ -1003,13 +1209,80 @@ function CenterPiles({ deckCount, pile, burnedCount, lastBurnSize }: {
 
 /* ============== Game log (with ARIA live) ============== */
 
+const LOG_COLLAPSED_KEY = 'ph_log_collapsed';
+function loadLogCollapsed(): boolean {
+  try { return localStorage.getItem(LOG_COLLAPSED_KEY) === '1'; } catch { return false; }
+}
+function saveLogCollapsed(v: boolean) {
+  try { localStorage.setItem(LOG_COLLAPSED_KEY, v ? '1' : '0'); } catch { /* ignore */ }
+}
+
 function GameLog({ log, sidebar = false }: { log: string[]; sidebar?: boolean }) {
+  // Sidebar mode: collapsible. Persist user preference so the choice
+  // survives reloads and travels between rounds. The collapsed view is
+  // a slim vertical rail (just the launcher button) so the game area
+  // gets ~272px of horizontal space back. New-log "ping" pip nudges the
+  // user when they're missing entries.
+  const [collapsed, setCollapsed] = useState<boolean>(() => sidebar ? loadLogCollapsed() : false);
+  const [unread, setUnread] = useState(0);
+  const seenLenRef = useRef(log.length);
+  useEffect(() => {
+    if (!sidebar) return;
+    if (!collapsed) { seenLenRef.current = log.length; setUnread(0); return; }
+    if (log.length > seenLenRef.current) setUnread(log.length - seenLenRef.current);
+  }, [log.length, collapsed, sidebar]);
+
+  const toggle = () => {
+    setCollapsed(c => {
+      const next = !c;
+      saveLogCollapsed(next);
+      if (!next) { seenLenRef.current = log.length; setUnread(0); }
+      return next;
+    });
+  };
+
+  if (sidebar) {
+    return (
+      <div className={`hidden lg:flex flex-col shrink-0 ${collapsed ? 'w-9' : 'w-72'} transition-[width] duration-200 ease-out`}>
+        {collapsed ? (
+          <button
+            onClick={toggle}
+            aria-label="Open game log"
+            className="relative w-9 h-28 self-start mt-2 rounded-r-lg bg-white/80 hover:bg-white border border-l-0 border-gray-300 flex flex-col items-center justify-center gap-1 text-gray-700 shadow-[0_4px_12px_rgba(0,0,0,0.15)]"
+          >
+            <span aria-hidden className="text-base leading-none">📜</span>
+            <span className="text-[9px] tracking-[0.2em] font-bold writing-mode-vertical [writing-mode:vertical-rl] [text-orientation:mixed]">LOG</span>
+            {unread > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-500 text-white text-[10px] font-bold flex items-center justify-center ring-2 ring-white">
+                {unread > 9 ? '9+' : unread}
+              </span>
+            )}
+          </button>
+        ) : (
+          <div className="w-72 max-h-[80vh] overflow-y-auto border border-gray-300 rounded-lg p-3 bg-white/70 text-sm">
+            <div className="flex items-center justify-between mb-2">
+              <div className="font-semibold">Game log</div>
+              <button
+                onClick={toggle}
+                aria-label="Collapse game log"
+                title="Collapse"
+                className="text-gray-500 hover:text-gray-800 px-1.5 py-0.5 rounded hover:bg-gray-200 leading-none"
+              >»</button>
+            </div>
+            <ul aria-live="polite" className="space-y-1">
+              {log.slice().reverse().map((l, i) => (
+                <li key={i} className="text-gray-700 leading-snug">• {l}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Embedded (e.g. mobile overlay) — no collapse affordance.
   return (
-    <div className={sidebar
-      ? 'hidden lg:block w-72 max-h-[80vh] overflow-y-auto border border-gray-300 rounded-lg p-3 bg-white/70 text-sm'
-      : 'p-3 text-sm'}
-    >
-      {sidebar && <div className="font-semibold mb-2">Game log</div>}
+    <div className="p-3 text-sm">
       <ul aria-live="polite" className="space-y-1">
         {log.slice().reverse().map((l, i) => (
           <li key={i} className="text-gray-700 leading-snug">• {l}</li>
@@ -1098,27 +1371,106 @@ function ToastStack({ toasts }: { toasts: Toast[] }) {
   );
 }
 
-/* ============== Status bar ============== */
-
+/* ============== Status bar ==============
+ *
+ * Slim dark-glass pill that lives above the table. Earns its horizontal
+ * space by surfacing the four facts a player needs at any glance:
+ *   1. Whose turn — coloured dot + name + "(your move)" highlight
+ *   2. Turn duration — live "thinking time" counter that resets whenever
+ *      the current seat changes. Helps surface stalls (yours or theirs)
+ *      without a separate timer ring.
+ *   3. Pile context — top-of-pile rank + last actor, so you don't have
+ *      to scan the centre piles to remember what you're playing onto.
+ *   4. Restriction state — 7-lock / bonus / direction pips when active.
+ * Plus the spectator-watching pip on the right when applicable.
+ */
 function StatusBar({ state, viewerId, isMyTurn, spectatorCount }: { state: GameState; viewerId: number | null; isMyTurn: boolean; spectatorCount?: number }) {
+  void viewerId;
   const p = state.players[state.current];
   const c = p ? colorFor(p.id) : null;
+
+  // Live turn timer — wallclock seconds since the current seat became active.
+  // Resets on every state.current transition. Updates once per second to
+  // avoid re-rendering the whole table on a tick.
+  const turnStartRef = useRef<number>(Date.now());
+  const lastSeatRef = useRef<number>(state.current);
+  if (lastSeatRef.current !== state.current) {
+    turnStartRef.current = Date.now();
+    lastSeatRef.current = state.current;
+  }
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const t = window.setInterval(() => setTick(x => x + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+  void tick;
+  const elapsedSec = Math.max(0, Math.floor((Date.now() - turnStartRef.current) / 1000));
+  const slow = elapsedSec >= 15;
+
+  // Pile + last-actor context (skips when the pile is empty / fresh round).
+  const top = state.pile.length > 0 ? state.pile[state.pile.length - 1] : null;
+  const lastActor = state.lastPlayerId !== null ? state.players[state.lastPlayerId] : null;
+  const lastDot = lastActor ? colorFor(lastActor.id) : null;
+
   return (
-    <div className="flex flex-wrap items-center gap-2 sm:gap-3 pl-20 sm:pl-24 pr-3 py-2 bg-white/80 border border-gray-300 rounded-lg text-xs sm:text-sm">
+    <div
+      className="mx-auto pl-20 sm:pl-24 pr-2 sm:pr-3 py-1.5 rounded-full bg-slate-900/80 backdrop-blur-md ring-1 ring-white/10 shadow-[0_8px_24px_rgba(0,0,0,0.35)] text-white text-xs sm:text-sm flex flex-wrap items-center gap-x-3 gap-y-1.5"
+    >
       {/* pl-20/24 leaves room for the fixed top-left menu (and Ultimate pill
-          beneath it) so the status text doesn't run underneath them. */}
-      <span className="flex items-center gap-1.5">
-        {c && <span className={`inline-block w-2 h-2 rounded-full ${c.dot}`} />}
-        <strong>{p?.name}</strong>'s turn{isMyTurn && <span className="ml-1 text-emerald-700 font-semibold">(your move)</span>}
+          beneath it) so this row never crowds them. */}
+      <span className="flex items-center gap-1.5 min-w-0">
+        {c && <span className={`inline-block w-2 h-2 rounded-full ${c.dot} shrink-0`} />}
+        <strong className="font-semibold truncate max-w-[140px] sm:max-w-[180px]">{p?.name}</strong>
+        <span className="text-white/60">·</span>
+        {isMyTurn
+          ? <span className="text-emerald-300 font-semibold tracking-wide">your move</span>
+          : <span className="text-white/65">thinking</span>}
       </span>
-      <span>{state.direction === 1 ? '↻' : '↺'}</span>
-      {state.sevenRestriction && <span className="px-2 py-0.5 bg-rose-100 text-rose-700 rounded">7-or-lower</span>}
-      {state.lastWasMine && <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded">bonus</span>}
-      {/* "👁 N watching" pip — shown to active players when at least one spectator
-          is connected. Auto-hides when nobody's watching to keep the bar clean. */}
+
+      {/* Direction arrow — small, used to require a separate row. */}
+      <span aria-label="direction" title={`Play direction: ${state.direction === 1 ? 'clockwise' : 'counter-clockwise'}`} className="text-white/55">
+        {state.direction === 1 ? '↻' : '↺'}
+      </span>
+
+      {/* Restriction / bonus pips */}
+      {state.sevenRestriction && (
+        <span className="px-1.5 py-0.5 rounded-full bg-rose-500/25 text-rose-200 ring-1 ring-rose-400/30 text-[10px] font-bold tracking-wide">7-OR-LOWER</span>
+      )}
+      {state.lastWasMine && (
+        <span className="px-1.5 py-0.5 rounded-full bg-emerald-500/25 text-emerald-200 ring-1 ring-emerald-400/30 text-[10px] font-bold tracking-wide">BONUS</span>
+      )}
+
+      {/* Pile context — only when there's something to summarise. The "·"
+          separator + small rank gives the bar weight without a chunky chip. */}
+      {top && (
+        <span className="hidden sm:flex items-center gap-1.5 text-white/75">
+          <span className="text-white/40">pile</span>
+          <span className={`font-bold ${RED_SUITS.includes(top.effSuit) ? 'text-rose-300' : 'text-white'}`}>
+            {top.effRank}{top.effSuit}
+          </span>
+          {lastActor && (
+            <span className="flex items-center gap-1 text-white/55">
+              <span className="text-white/35">·</span>
+              {lastDot && <span className={`inline-block w-1.5 h-1.5 rounded-full ${lastDot.dot}`} />}
+              <span className="truncate max-w-[120px]">{lastActor.name}</span>
+            </span>
+          )}
+        </span>
+      )}
+
+      {/* Live "thinking" counter on the right. Tints amber once it crosses
+          15s so observers can spot stalls without a hard timer. */}
+      <span className={`ml-auto tabular-nums font-mono text-[11px] ${slow ? 'text-amber-300' : 'text-white/55'}`}
+        title="Time on this turn"
+      >
+        ⏱ {String(Math.floor(elapsedSec / 60)).padStart(2, '0')}:{String(elapsedSec % 60).padStart(2, '0')}
+      </span>
+
+      {/* "👁 N watching" pip — surfaced to active players when spectators
+          are connected. Auto-hides when zero. */}
       {spectatorCount !== undefined && spectatorCount > 0 && (
         <span
-          className="ml-auto px-2 py-0.5 rounded-full bg-violet-100 text-violet-800 border border-violet-300 font-semibold flex items-center gap-1"
+          className="px-2 py-0.5 rounded-full bg-violet-500/25 text-violet-200 ring-1 ring-violet-400/30 font-semibold flex items-center gap-1 text-[10px]"
           title={`${spectatorCount} spectator${spectatorCount === 1 ? '' : 's'} watching`}
         >
           <span aria-hidden>👁</span>
@@ -1177,118 +1529,363 @@ function SoundControls({ muted, volume, setMuted, setVolume, aiSpeed, setAiSpeed
 
 /* ============== Deal animation ============== */
 
-function DealAnimation({ playerNames, onComplete }: { playerNames: string[]; onComplete: () => void }) {
-  const n = playerNames.length;
-  // Place players evenly around a "table" — start at the bottom (viewer-friendly).
-  const radius = 220;
+/* ============== Game-start cinematic ==============
+ *
+ * IntroSequence orchestrates the opening "round establishing → player reel
+ * → deal → settle" sequence as a fullscreen overlay. It mounts when a fresh
+ * game's deal-key is detected (handled by useDealAnimationGate) and tears
+ * itself down via onComplete.
+ *
+ * Beats (durations in ms — total ~3500ms):
+ *   0      establishing  felt darkens, mode banner + "Latrine" wordmark fade in
+ *   500    playerReel    avatar chips pop in around an elliptical layout,
+ *                        staggered ~140ms each (or all at once if reduced motion)
+ *   500+R  shuffle       small deck shuffles in centre
+ *   1500   deal          three rounds: face-down → face-up → hand. Each round
+ *                        deals one card to every seat in order, with subtly
+ *                        different trajectories so the rows are legible.
+ *   ~3000  settle        deck collapses, brief "Ready" caption, fade out
+ *   ~3500  done          onComplete fires → swap UI takes over
+ *
+ * Players can tap/press any key to skip → fast-forward to onComplete.
+ * `prefers-reduced-motion`: collapses to a 600ms cross-fade with no flying
+ * cards (the player chips and a static "Dealing…" line are all that show).
+ */
+function IntroSequence({
+  players,
+  avatars,
+  mode,
+  aiDifficulty,
+  onComplete,
+}: {
+  players: { name: string; isAi?: boolean }[];
+  avatars: (string | null)[];
+  mode: 'classic' | 'ultimate';
+  aiDifficulty?: AiDifficulty;
+  onComplete: () => void;
+}) {
+  const reduced = useReducedMotion();
+  const n = players.length;
+
+  // Elliptical seating — viewer at the bottom (angle = π/2). Slightly squashed
+  // vertically so it reads like a poker table rather than a circle. The
+  // dealing destinations and the chip positions share these coordinates so
+  // cards visibly "land" on the right player.
+  //
+  // Radii scale with the viewport so a 375px-wide phone doesn't put the
+  // side seats outside the visible area. We measure once on mount and on
+  // resize, then derive RX/RY from the smaller dimension. Falls back to
+  // the desktop sizing during SSR / first paint.
+  const [vw, setVW] = useState(() => (typeof window === 'undefined' ? 1024 : window.innerWidth));
+  const [vh, setVH] = useState(() => (typeof window === 'undefined' ? 768 : window.innerHeight));
+  useEffect(() => {
+    const update = () => { setVW(window.innerWidth); setVH(window.innerHeight); };
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
+  // Stage targets up to 680×480 on desktop, but shrinks proportionally so
+  // 2*RX + chip width fits the viewport with margin to spare.
+  const stageW = Math.min(680, vw - 32);
+  const stageH = Math.min(480, vh * 0.62);
+  const RX = Math.max(110, stageW / 2 - 80);    // 80px margin per side reserves room for chips
+  const RY = Math.max(70,  stageH / 2 - 70);
   const positions = useMemo(() => {
-    const arr: { x: number; y: number; name: string; angle: number }[] = [];
-    for (let i = 0; i < n; i++) {
-      const angle = (i / n) * Math.PI * 2 + Math.PI / 2; // start at bottom
-      arr.push({ x: Math.cos(angle) * radius, y: Math.sin(angle) * radius, name: playerNames[i], angle });
+    return players.map((p, i) => {
+      // Start at bottom, distribute clockwise. Add tiny offsets so 2-player
+      // games don't put both seats on the vertical axis.
+      const angle = (i / n) * Math.PI * 2 + Math.PI / 2;
+      return {
+        x: Math.cos(angle) * RX,
+        y: Math.sin(angle) * RY,
+        angle,
+        name: p.name,
+        isAi: !!p.isAi,
+        avatar: avatars[i] ?? null,
+      };
+    });
+  }, [players, avatars, n, RX, RY]);
+
+  // Tunables.
+  const ESTABLISH_MS = reduced ? 0 : 500;
+  const REEL_PER_CHIP_MS = reduced ? 0 : 140;
+  const REEL_DUR_MS = reduced ? 0 : Math.max(600, n * REEL_PER_CHIP_MS + 200);
+  const SHUFFLE_MS = reduced ? 0 : 700;
+  // Burst-style deal: each player receives all 3 cards (face-down + face-up +
+  // hand) at once in a single visual burst, then we move on to the next
+  // player. Reads as "3, 3, 3" rather than the previous round-by-round
+  // "1, 1, 1" pattern. Tiny within-burst stagger (BURST_FAN_MS) makes the
+  // three cards fan out so they don't render as a single card sprite.
+  const BURST_GAP_MS = reduced ? 0 : 320;   // delay between players' bursts
+  const BURST_FAN_MS = reduced ? 0 : 60;    // intra-burst stagger between rows
+  const BURST_TRAVEL_MS = reduced ? 0 : 460; // travel time per card
+  const dealStart = ESTABLISH_MS + REEL_DUR_MS + SHUFFLE_MS;
+  const dealEnd = dealStart + (n - 1) * BURST_GAP_MS + 2 * BURST_FAN_MS + BURST_TRAVEL_MS;
+  // dealEnd is the moment the last card lands. The +120ms buffer covers
+  // the card's settle frame and lets the parent's exit fade overlap with
+  // the table appearing — was 500ms, which felt like the overlay was
+  // "stuck" after the action had clearly finished.
+  const totalMs = reduced ? 800 : dealEnd + 120;
+
+  // Skip-on-interaction. Any tap, click, or key press fast-forwards.
+  const [skipped, setSkipped] = useState(false);
+  useEffect(() => {
+    if (skipped) {
+      const t = setTimeout(onComplete, 180); // brief fade so it doesn't snap
+      return () => clearTimeout(t);
     }
-    return arr;
-  }, [n, playerNames]);
-
-  const SHUFFLE_MS = 1100;
-  const PER_CARD_MS = 35;
-  const CARDS_PER_PLAYER = 9;
-  const dealStart = SHUFFLE_MS / 1000;
-  const dealEnd = dealStart + (n * CARDS_PER_PLAYER * PER_CARD_MS) / 1000 + 0.5;
-
-  useEffect(() => {
-    const total = (dealEnd + 0.4) * 1000;
-    const t = setTimeout(onComplete, total);
+    const t = setTimeout(onComplete, totalMs);
     return () => clearTimeout(t);
-  }, [onComplete, dealEnd]);
+  }, [skipped, onComplete, totalMs]);
 
-  // Sound: a soft tick on each card landing.
   useEffect(() => {
+    const handler = () => setSkipped(true);
+    window.addEventListener('keydown', handler, { once: true });
+    window.addEventListener('pointerdown', handler, { once: true });
+    return () => {
+      window.removeEventListener('keydown', handler);
+      window.removeEventListener('pointerdown', handler);
+    };
+  }, []);
+
+  // Audio choreography. Per-burst whoosh + a triple click cluster as the 3
+  // cards land at each seat. Wrapped in timers so a skip clears them.
+  useEffect(() => {
+    if (reduced) return;
     const timers: number[] = [];
-    for (let p = 0; p < n; p++) {
-      for (let c = 0; c < CARDS_PER_PLAYER; c++) {
-        const delay = (dealStart + (p * CARDS_PER_PLAYER + c) * PER_CARD_MS / 1000) * 1000;
-        timers.push(window.setTimeout(() => sfx.play('click'), delay));
+    for (let i = 0; i < n; i++) {
+      const burstT = dealStart + i * BURST_GAP_MS;
+      timers.push(window.setTimeout(() => sfx.play('emote'), burstT - 60));
+      for (let r = 0; r < 3; r++) {
+        const t = burstT + r * BURST_FAN_MS + Math.floor(BURST_TRAVEL_MS * 0.7);
+        timers.push(window.setTimeout(() => sfx.play('click'), t));
       }
     }
-    return () => timers.forEach(t => clearTimeout(t));
-  }, [n]);
+    return () => timers.forEach(clearTimeout);
+  }, [reduced, dealStart, n, BURST_GAP_MS, BURST_FAN_MS, BURST_TRAVEL_MS]);
+
+  // Reduced-motion path: tiny crossfade with chips + caption only.
+  if (reduced) {
+    return (
+      <motion.div
+        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+        transition={{ duration: 0.2 }}
+        className="fixed inset-0 z-40 flex items-center justify-center bg-stone-950/55 backdrop-blur-md"
+      >
+        <div className="text-white/90 text-base font-semibold tracking-wide">Dealing…</div>
+      </motion.div>
+    );
+  }
 
   return (
     <motion.div
-      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-      className="fixed inset-0 z-40 flex items-center justify-center bg-stone-900/30 backdrop-blur-sm"
+      initial={{ opacity: 0 }} animate={{ opacity: skipped ? 0 : 1 }} exit={{ opacity: 0 }}
+      transition={{ duration: 0.25 }}
+      className="fixed inset-0 z-40 flex items-center justify-center cursor-pointer"
+      style={{ background: 'radial-gradient(ellipse at center, rgba(8,20,14,0.55) 0%, rgba(0,0,0,0.85) 100%)', backdropFilter: 'blur(6px)' }}
+      onClick={() => setSkipped(true)}
     >
-      <div className="relative w-[600px] h-[520px] max-w-[95vw] max-h-[80vh]">
-        {/* Player labels */}
-        {positions.map((pos, i) => (
-          <motion.div
-            key={`label-${i}`}
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.3 }}
-            className="absolute text-sm font-semibold text-white drop-shadow"
-            style={{
-              left: `calc(50% + ${pos.x}px)`,
-              top: `calc(50% + ${pos.y * 1.15}px)`,
-              transform: 'translate(-50%, -50%)',
-            }}
-          >
-            <span className="px-2 py-0.5 bg-stone-800/80 rounded-full">{pos.name}</span>
-          </motion.div>
-        ))}
+      {/* Wordmark + mode chip — establishing shot. Stays visible all the way
+          through establish + reel + shuffle, only beginning to fade once the
+          first deal round starts. Positioned higher on mobile (vertical
+          space is tight) and noticeably more centered on desktop so it
+          reads as a proper title card. */}
+      {(() => {
+        const wordmarkVisibleMs = ESTABLISH_MS + REEL_DUR_MS + SHUFFLE_MS + 400;
+        // Hold at full opacity for the bulk of that window — fade in fast,
+        // fade out slowly as the deal kicks off.
+        const inAt = 200 / wordmarkVisibleMs;
+        const outAt = (wordmarkVisibleMs - 350) / wordmarkVisibleMs;
+        return (
+        // inset-x-0 + flex-center reliably centers the wordmark on the
+        // viewport, regardless of letter-spacing widening the box. The
+        // older left-1/2 + -translate-x-1/2 pattern combined with
+        // `tracking-[0.22em]` could visually drift on wider screens.
+        <motion.div
+          initial={{ opacity: 0, y: -12 }}
+          animate={{ opacity: [0, 1, 1, 0], y: [-12, 0, 0, -6] }}
+          transition={{ duration: wordmarkVisibleMs / 1000, times: [0, inAt, outAt, 1] }}
+          className="absolute top-[22%] sm:top-[30%] md:top-[34%] inset-x-0 flex flex-col items-center gap-2.5 z-10 pointer-events-none"
+          // Match the same mobile left-nudge applied to the stage so the
+          // wordmark stays visually aligned with the elliptical layout.
+          style={{ marginLeft: vw < 640 ? -20 : 0 }}
+        >
+          <div className="text-white text-3xl sm:text-5xl md:text-6xl font-black tracking-[0.22em] drop-shadow-[0_4px_24px_rgba(16,185,129,0.45)] text-center">
+            LATRINE
+          </div>
+        <div className="flex items-center gap-2 text-[11px] uppercase tracking-widest">
+          <span className={`px-2.5 py-1 rounded-full font-bold ${mode === 'ultimate' ? 'bg-fuchsia-500/90 text-white' : 'bg-emerald-500/90 text-white'}`}>
+            {mode === 'ultimate' ? '✦ Ultimate' : 'Classic'}
+          </span>
+          <span className="px-2.5 py-1 rounded-full bg-white/10 text-white/80 ring-1 ring-white/15">
+            {n} player{n === 1 ? '' : 's'}
+          </span>
+          {aiDifficulty && players.some(p => p.isAi) && (
+            <span className="px-2.5 py-1 rounded-full bg-white/10 text-white/80 ring-1 ring-white/15">
+              vs AI · {aiDifficulty}
+            </span>
+          )}
+        </div>
+        </motion.div>
+        );
+      })()}
 
-        {/* Shuffling deck (center) */}
-        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+      {/* Stage — all elliptical layout coordinates are relative to the centre of this box.
+          Width/height are derived from the viewport so chips/cards never escape it. */}
+      <div
+        className="relative"
+        style={{
+          width: stageW,
+          height: stageH,
+          // Nudge left on mobile so the elliptical layout sits visually
+          // centered against the felt — without this it leans right
+          // because of various viewport asymmetries (right-edge gutter,
+          // safe-area insets on notched devices, etc.).
+          marginLeft: vw < 640 ? -20 : 0,
+        }}
+      >
+        {/* Soft elliptical guide ring — sketches where seats will land. */}
+        <motion.div
+          initial={{ opacity: 0, scale: 0.96 }}
+          animate={{ opacity: skipped ? 0 : 0.18, scale: 1 }}
+          transition={{ duration: 0.6, delay: ESTABLISH_MS / 1000 }}
+          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full"
+          style={{
+            width: RX * 2 + 80,
+            height: RY * 2 + 60,
+            border: '1px solid rgba(255,255,255,0.35)',
+            boxShadow: 'inset 0 0 60px rgba(16,185,129,0.18)',
+          }}
+        />
+
+        {/* Player chips — pop in around the table in order */}
+        {positions.map((pos, i) => {
+          const def = avatarDef(pos.avatar);
+          return (
+            <motion.div
+              key={`chip-${i}`}
+              initial={{ opacity: 0, scale: 0.6, x: pos.x * 1.25, y: pos.y * 1.25 }}
+              animate={{
+                opacity: 1, scale: 1,
+                x: pos.x, y: pos.y,
+              }}
+              transition={{
+                delay: (ESTABLISH_MS + i * REEL_PER_CHIP_MS) / 1000,
+                type: 'spring', stiffness: 260, damping: 22,
+              }}
+              className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-1.5 pointer-events-none"
+            >
+              <div
+                className={`w-12 h-12 rounded-full ring-2 ring-white/30 shadow-[0_8px_24px_rgba(0,0,0,0.45)] flex items-center justify-center text-2xl bg-gradient-to-br ${def?.gradient ?? 'from-slate-500 to-slate-800'}`}
+              >
+                <span aria-hidden>{def?.emoji ?? (pos.isAi ? '🤖' : '👤')}</span>
+              </div>
+              <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold text-white bg-slate-900/80 ring-1 ring-white/10 max-w-[110px] truncate">
+                {pos.name}
+                {pos.isAi && <span className="ml-1 text-white/55">· AI</span>}
+              </span>
+            </motion.div>
+          );
+        })}
+
+        {/* Shuffling deck — six stacked card-backs that wobble during the shuffle window. */}
+        <motion.div
+          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ delay: (ESTABLISH_MS + REEL_DUR_MS - 200) / 1000, duration: 0.25 }}
+        >
           {[0, 1, 2, 3, 4, 5].map(i => (
             <motion.div
               key={`shuffle-${i}`}
               initial={{ rotate: 0, x: 0, y: 0 }}
               animate={{
-                rotate: [0, (i % 2 === 0 ? 25 : -25), 0, (i % 2 === 0 ? -15 : 15), 0],
-                x: [0, (i % 2 === 0 ? 30 : -30), 0, 0, 0],
-                y: [0, -i * 1.5, -i * 1.5, -i * 1.5, -i * 1.5],
+                rotate: [0, (i % 2 === 0 ? 18 : -18), 0],
+                x: [0, (i % 2 === 0 ? 22 : -22), 0],
+                y: [0, -i * 1.4, -i * 1.4],
               }}
-              transition={{ duration: SHUFFLE_MS / 1000, ease: 'easeInOut' }}
+              transition={{
+                delay: (ESTABLISH_MS + REEL_DUR_MS) / 1000,
+                duration: SHUFFLE_MS / 1000,
+                ease: 'easeInOut',
+              }}
               className="absolute -translate-x-1/2 -translate-y-1/2"
             >
               <CardFace hidden />
             </motion.div>
           ))}
-        </div>
+        </motion.div>
 
-        {/* Dealt cards flying from center to each player's stack */}
-        {positions.flatMap((pos, p) =>
-          Array.from({ length: CARDS_PER_PLAYER }).map((_, c) => {
-            const row = Math.floor(c / 3); // 0 face-down, 1 face-up, 2 hand
-            const col = c % 3;
-            const slotX = pos.x + (col - 1) * 24;
-            const slotY = pos.y + (row - 1) * 18;
+        {/* The deal — burst-style. Each player receives a 3-card burst at
+            once (face-down + face-up + hand), then we move to the next
+            seat. Within a burst the rows are staggered by BURST_FAN_MS so
+            they fan out instead of rendering as one stacked sprite. */}
+        {positions.flatMap((pos, i) => {
+          const burstDelay = dealStart + i * BURST_GAP_MS;
+          // Tangent direction at this seat (perpendicular to the radial
+          // vector) — kept for future side-by-side spreading; rows currently
+          // separate via radial offset below.
+          // Row offset — face-down (row 0) sits closest to centre, hand
+          // (row 2) sits farthest. radial offsets in {-18, 0, +18}.
+          const rot = (pos.angle * 180) / Math.PI + 90;
+          return [0, 1, 2].map(row => {
+            const cardDelay = burstDelay + row * BURST_FAN_MS;
+            const radial = (row - 1) * 18;
+            const rx = Math.cos(pos.angle) * radial;
+            const ry = Math.sin(pos.angle) * radial * 0.6;
+            const finalX = pos.x + rx;
+            const finalY = pos.y + ry;
             return (
               <motion.div
-                key={`deal-${p}-${c}`}
-                initial={{ x: 0, y: 0, scale: 1, opacity: 0, rotate: 0 }}
-                animate={{ x: slotX, y: slotY, scale: 0.55, opacity: 1, rotate: pos.angle * (180 / Math.PI) + 90 }}
+                key={`deal-${i}-${row}`}
+                initial={{ x: 0, y: 0, opacity: 0, scale: 1, rotate: 0 }}
+                animate={{
+                  x: finalX, y: finalY,
+                  opacity: [0, 1, 1, 0.92],
+                  scale: 0.55,
+                  rotate: rot,
+                }}
                 transition={{
-                  delay: dealStart + (p * CARDS_PER_PLAYER + c) * PER_CARD_MS / 1000,
-                  duration: 0.45,
-                  type: 'spring', stiffness: 220, damping: 22,
+                  delay: cardDelay / 1000,
+                  duration: BURST_TRAVEL_MS / 1000,
+                  ease: [0.32, 0.72, 0.35, 1.0], // emphasized cubic — card snapping to table
+                  opacity: { duration: BURST_TRAVEL_MS / 1000, times: [0, 0.18, 0.85, 1] },
                 }}
                 className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
               >
                 <CardFace hidden />
               </motion.div>
             );
-          })
-        )}
+          });
+        })}
 
-        {/* "Dealing…" caption */}
+        {/* Single "Dealing…" caption that holds through the full burst sequence. */}
         <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: [0, 1, 1, 0], y: 0 }}
-          transition={{ duration: dealEnd, times: [0, 0.05, 0.9, 1] }}
-          className="absolute bottom-4 left-1/2 -translate-x-1/2 text-white font-semibold text-lg drop-shadow"
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: [0, 1, 1, 0], y: [8, 0, 0, -4] }}
+          transition={{
+            delay: dealStart / 1000,
+            duration: ((n - 1) * BURST_GAP_MS + BURST_TRAVEL_MS) / 1000,
+            times: [0, 0.12, 0.85, 1],
+          }}
+          className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-slate-900/85 ring-1 ring-white/10 text-white/90 text-xs font-semibold tracking-wide"
         >
-          Shuffling & dealing…
+          Dealing…
         </motion.div>
+
+        {/* Final "Ready" line — appears as the deal finishes. */}
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: [0, 1, 0], y: [8, 0, -4] }}
+          transition={{ delay: (dealEnd) / 1000, duration: 0.5, times: [0, 0.4, 1] }}
+          className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-emerald-500/90 text-white text-xs font-bold tracking-wide shadow-[0_6px_20px_rgba(16,185,129,0.45)]"
+        >
+          Ready
+        </motion.div>
+      </div>
+
+      {/* Skip hint — faint, lower-right. */}
+      <div className="absolute bottom-4 right-4 text-[11px] text-white/50 select-none pointer-events-none">
+        tap to skip
       </div>
     </motion.div>
   );
@@ -1395,29 +1992,94 @@ function useFromDeckTracker(state: GameState | null, viewerId: number): Set<stri
   return active;
 }
 
-// Renders fixed-position card-back motion.divs that fly from the deck to the hand area.
-// Uses screen coordinates from deckPosRef (registered by CenterPiles' deck DOM element)
-// and falls back to the viewport center if the deck hasn't been measured yet.
-function DeckDrawOverlay({ ids }: { ids: string[] }) {
-  if (ids.length === 0) return null;
+/* Per-player tile position registry. PlayerArea registers its own tile's
+ * screen-centre on mount + on resize so the deck-draw overlay can target
+ * each seat individually. The viewer's seat lands at roughly the same
+ * spot as the old "bottom-centre" fallback, but other players now get
+ * their own targeted flight too. */
+const playerPosRefs: { current: Record<number, { x: number; y: number }> } = { current: {} };
+
+function registerPlayerPos(id: number, el: HTMLElement | null) {
+  if (!el) {
+    delete playerPosRefs.current[id];
+    return;
+  }
+  const r = el.getBoundingClientRect();
+  playerPosRefs.current[id] = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+}
+
+/* Per-player draw event tracker. Watches every player's hand size + the
+ * deck count. When any player's hand grows in the same tick that the
+ * deck shrinks, we emit a draw event { playerId, count, key, ts } that
+ * the overlay will animate. Auto-pruned after FLY_DURATION_MS + buffer. */
+interface DrawEvent { key: number; playerId: number; count: number; }
+function useAllPlayerDraws(state: GameState | null): DrawEvent[] {
+  const [events, setEvents] = useState<DrawEvent[]>([]);
+  const prev = useRef<{ handSizes: number[]; deck: number } | null>(null);
+  const counterRef = useRef(0);
+  const timersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+
+  useEffect(() => {
+    if (!state) { prev.current = null; return; }
+    const handSizes = state.players.map(p => p.hand.length);
+    const deck = state.deck.length;
+    const last = prev.current;
+    prev.current = { handSizes, deck };
+    if (!last) return;
+    if (deck >= last.deck) return; // deck grew or unchanged → not a draw
+    // For each player whose hand grew this tick, attribute the draw.
+    const fresh: DrawEvent[] = [];
+    handSizes.forEach((sz, i) => {
+      const grew = sz - (last.handSizes[i] ?? 0);
+      if (grew > 0) {
+        counterRef.current += 1;
+        fresh.push({ key: counterRef.current, playerId: i, count: Math.min(grew, 6) });
+      }
+    });
+    if (fresh.length === 0) return;
+    setEvents(es => [...es, ...fresh]);
+    const t = setTimeout(() => {
+      setEvents(es => es.filter(e => !fresh.some(f => f.key === e.key)));
+      timersRef.current.delete(t);
+    }, FLY_DURATION_MS + 250);
+    timersRef.current.add(t);
+  }, [state]);
+
+  useEffect(() => {
+    const timers = timersRef.current;
+    return () => { timers.forEach(clearTimeout); timers.clear(); };
+  }, []);
+
+  return events;
+}
+
+// Renders fixed-position card-back motion.divs that fly from the deck to
+// each drawing player's tile. Uses screen coordinates from deckPosRef
+// (registered by CenterPiles' deck DOM element) and the per-player
+// playerPosRefs registry. Falls back to viewport center / bottom-centre
+// if a position hasn't been measured yet.
+function DeckDrawOverlay({ events }: { events: DrawEvent[] }) {
+  if (events.length === 0) return null;
   const from = deckPosRef.current ?? { x: window.innerWidth / 2, y: window.innerHeight / 2 };
-  // Land near the bottom-center of the viewport (where the hand strip usually sits).
-  const to = { x: window.innerWidth / 2, y: window.innerHeight - 110 };
   return (
     <div className="fixed inset-0 pointer-events-none z-30">
       <AnimatePresence>
-        {ids.map((id, i) => (
-          <motion.div
-            key={id}
-            initial={{ x: from.x - 32, y: from.y - 48, scale: 1, opacity: 1, rotate: 0 }}
-            animate={{ x: to.x - 32, y: to.y - 48, scale: 0.9, opacity: 1, rotate: -180 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: FLY_DURATION_MS / 1000, ease: [0.16, 1, 0.3, 1], delay: i * 0.08 }}
-            className="absolute"
-          >
-            <CardFace hidden />
-          </motion.div>
-        ))}
+        {events.flatMap(ev => {
+          const target = playerPosRefs.current[ev.playerId]
+            ?? { x: window.innerWidth / 2, y: window.innerHeight - 110 };
+          return Array.from({ length: ev.count }).map((_, i) => (
+            <motion.div
+              key={`draw-${ev.key}-${i}`}
+              initial={{ x: from.x - 32, y: from.y - 48, scale: 1, opacity: 1, rotate: 0 }}
+              animate={{ x: target.x - 32, y: target.y - 48, scale: 0.7, opacity: 1, rotate: -180 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: FLY_DURATION_MS / 1000, ease: [0.16, 1, 0.3, 1], delay: i * 0.08 }}
+              className="absolute"
+            >
+              <CardFace hidden />
+            </motion.div>
+          ));
+        })}
       </AnimatePresence>
     </div>
   );
@@ -3109,63 +3771,164 @@ function SwapScreen({ state, dispatch, viewerId }: {
 }) {
   const allReady = state.swapReady.every(Boolean);
   const isNetwork = viewerId !== null && viewerId !== -1;
+  // Local play: pass-the-device. The "active" swapper is the next human
+  // player who hasn't readied yet. Network play: it's whoever the viewer is.
+  const activeSwapperIdx = isNetwork
+    ? viewerId
+    : state.players.findIndex(p => !p.isAi && !state.swapReady[p.id]);
+  const activeSwapper = activeSwapperIdx >= 0 ? state.players[activeSwapperIdx] : null;
+  const sel = activeSwapperIdx >= 0 ? state.swapSelected[activeSwapperIdx] ?? null : null;
+  const ready = activeSwapperIdx >= 0 ? state.swapReady[activeSwapperIdx] : false;
+  const readyCount = state.swapReady.filter(Boolean).length;
+  const total = state.players.length;
+
   return (
-    <div className="p-3 sm:p-4 pt-14 flex flex-col gap-4">
-      <h2 className="text-xl sm:text-2xl font-bold text-white drop-shadow">Swap phase</h2>
-      <p className="text-xs sm:text-sm text-white/80">
-        Click a hand card, then a face-up card (or vice versa) to swap. Click <em>Ready</em> when done.
-        {isNetwork ? ' Each player swaps independently.' : ' Pass the device between players.'}
-      </p>
-      <div className="grid gap-3 sm:gap-4 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
-        {state.players.map((p, i) => {
-          const editable = isNetwork ? viewerId === i : !p.isAi;
-          const sel = state.swapSelected[i] ?? null;
-          const ready = state.swapReady[i];
-          const c = colorFor(i);
-          return (
-            <div key={p.id} className={`border-2 rounded-lg p-3 flex flex-col gap-2 ${editable ? `bg-white/70 ${c.border}` : 'bg-white/40 border-gray-300'}`}>
-              <div className="font-semibold flex items-center gap-1.5">
-                <span className={`inline-block w-2 h-2 rounded-full ${c.dot}`} />
-                {p.name}
-                {p.isAi && <span className="text-[10px] px-1 py-0.5 bg-gray-200 rounded">AI</span>}
-                {viewerId === i && <span className="text-xs text-emerald-700">(you)</span>}
-              </div>
-              <div className="text-xs text-gray-500">Face-up</div>
-              <div className="flex gap-1 flex-wrap">
-                {p.faceUp.map(card => (
-                  <CardFace key={card.id} card={card} small
-                    selected={sel?.source === 'faceUp' && sel.id === card.id && !ready}
-                    dim={ready || !editable}
-                    onClick={editable && !ready ? () => dispatch({ type: 'SWAP_PICK', player: i, source: 'faceUp', id: card.id }) : undefined}
-                  />
-                ))}
-              </div>
-              <div className="text-xs text-gray-500">Hand</div>
-              <div className="flex gap-1 flex-wrap">
-                {p.hand.map(card => (
-                  <CardFace key={card.id} card={card} small
-                    hidden={isNetwork && viewerId !== i}
-                    selected={sel?.source === 'hand' && sel.id === card.id && !ready}
-                    dim={ready || !editable}
-                    onClick={editable && !ready ? () => dispatch({ type: 'SWAP_PICK', player: i, source: 'hand', id: card.id }) : undefined}
-                  />
-                ))}
-              </div>
-              <button
-                disabled={!editable}
-                onClick={() => dispatch({ type: 'SWAP_READY', player: i })}
-                className={`mt-1 px-3 py-1 rounded text-sm font-semibold ${ready ? 'bg-emerald-500 text-white' : 'bg-gray-200'} ${editable ? '' : 'opacity-50 cursor-not-allowed'}`}
-              >{ready ? 'Ready ✓' : 'Mark ready'}</button>
-            </div>
-          );
-        })}
+    <div className="min-h-full p-3 sm:p-6 pt-16 sm:pt-20 flex flex-col gap-4 sm:gap-5 max-w-5xl mx-auto w-full">
+      {/* Title block — small caps subtitle + bold heading + progress pill,
+          all on one row on desktop and stacked on mobile. Replaces the
+          plain "Swap phase" text + verbose paragraph. */}
+      <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2">
+        <div>
+          <div className="text-[11px] uppercase tracking-[0.18em] text-emerald-300/80 font-semibold">Pre-game</div>
+          <h2 className="text-2xl sm:text-3xl font-black text-white drop-shadow tracking-tight">Swap your cards</h2>
+          <p className="text-xs sm:text-sm text-white/65 mt-1 max-w-xl">
+            Tap a hand card, then a face-up card (or vice versa) to swap.
+            {isNetwork ? ' Each player swaps independently.' : ' Pass the device between players when each is ready.'}
+          </p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="text-[11px] uppercase tracking-widest text-white/55 font-semibold">Ready</span>
+          <span className="px-2.5 py-1 rounded-full bg-slate-900/75 ring-1 ring-white/10 text-white text-sm font-bold tabular-nums">
+            {readyCount}<span className="text-white/45">/{total}</span>
+          </span>
+        </div>
       </div>
-      <div>
+
+      {/* HERO swap panel for the active human player. Bigger, brighter, dark
+          glass body + amber rail on the side that ties it to the start CTA. */}
+      {activeSwapper && !ready && (
+        <div className="relative rounded-2xl bg-slate-900/80 backdrop-blur-md ring-1 ring-white/10 shadow-[0_12px_36px_rgba(0,0,0,0.45)] overflow-hidden">
+          <div className={`absolute left-0 top-0 bottom-0 w-1 ${colorFor(activeSwapperIdx).dot}`} />
+          <div className="p-4 sm:p-5 flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-2">
+                <span className={`inline-block w-2.5 h-2.5 rounded-full ${colorFor(activeSwapperIdx).dot}`} />
+                <span className="text-white font-bold text-base sm:text-lg">{activeSwapper.name}</span>
+                {viewerId === activeSwapperIdx && <span className="text-[10px] text-emerald-300 font-bold tracking-wide">(you)</span>}
+              </div>
+              {sel && (
+                <div className="text-[11px] text-amber-300 font-semibold">
+                  Selected — pick a card from {sel.source === 'hand' ? 'face-up' : 'hand'} to swap
+                </div>
+              )}
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-widest text-white/45 font-semibold mb-1.5">Face-up</div>
+              <div className="flex gap-1.5 flex-wrap">
+                {activeSwapper.faceUp.map(card => (
+                  <CardFace key={card.id} card={card} small
+                    selected={sel?.source === 'faceUp' && sel.id === card.id}
+                    onClick={() => dispatch({ type: 'SWAP_PICK', player: activeSwapperIdx, source: 'faceUp', id: card.id })}
+                  />
+                ))}
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-widest text-white/45 font-semibold mb-1.5">Hand</div>
+              <div className="flex gap-1.5 flex-wrap">
+                {activeSwapper.hand.map(card => (
+                  <CardFace key={card.id} card={card} small
+                    selected={sel?.source === 'hand' && sel.id === card.id}
+                    onClick={() => dispatch({ type: 'SWAP_PICK', player: activeSwapperIdx, source: 'hand', id: card.id })}
+                  />
+                ))}
+              </div>
+            </div>
+            <button
+              onClick={() => dispatch({ type: 'SWAP_READY', player: activeSwapperIdx })}
+              className="self-end px-4 h-10 rounded-full bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-white text-sm font-bold shadow-[0_4px_14px_rgba(16,185,129,0.4)] transition-all"
+            >
+              I'm ready ✓
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Other seats — every player's face-up + hand visible (hand is
+          hidden for non-self in network mode; local mode shows all hands
+          since the device is being passed around). The active swapper is
+          rendered in the hero panel above and skipped here, so we don't
+          show their seat twice. AIs and already-ready players still
+          render with cards but at lower opacity so the eye lands on the
+          active panel first. */}
+      <div className="flex flex-col gap-2">
+        <div className="text-[10px] uppercase tracking-widest text-white/40 font-semibold">Other players</div>
+        <div className="grid gap-2 sm:gap-3 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
+          {state.players.map((p, i) => {
+            const isActive = i === activeSwapperIdx && !ready;
+            if (isActive) return null; // shown in hero
+            const c = colorFor(i);
+            const isReady = state.swapReady[i];
+            const handHidden = isNetwork && viewerId !== i;
+            return (
+              <div
+                key={p.id}
+                className={`relative rounded-xl bg-slate-900/55 backdrop-blur-md ring-1 overflow-hidden ${
+                  isReady ? 'ring-emerald-400/25' : 'ring-white/10'
+                }`}
+              >
+                <div className={`absolute left-0 top-0 bottom-0 w-0.5 ${c.dot}`} />
+                <div className="p-3 flex flex-col gap-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className={`inline-block w-2 h-2 rounded-full ${c.dot} shrink-0`} />
+                      <span className="text-white text-sm font-bold truncate">{p.name}</span>
+                      {p.isAi && <span className="text-[9px] px-1 py-0.5 rounded bg-white/10 text-white/80 font-bold tracking-wide shrink-0">AI</span>}
+                      {viewerId === i && <span className="text-[10px] text-emerald-300 font-bold shrink-0">(you)</span>}
+                    </div>
+                    {isReady
+                      ? <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/25 text-emerald-200 ring-1 ring-emerald-400/30 font-bold tracking-wide shrink-0">READY ✓</span>
+                      : <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-white/5 text-white/55 ring-1 ring-white/10 font-bold tracking-wide shrink-0">WAITING</span>
+                    }
+                  </div>
+                  <div>
+                    <div className="text-[9px] uppercase tracking-widest text-white/40 font-semibold mb-1">Face-up</div>
+                    <div className="flex gap-0.5 flex-wrap">
+                      {p.faceUp.map(card => (
+                        <CardFace key={card.id} card={card} size="tiny" dim={isReady} />
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[9px] uppercase tracking-widest text-white/40 font-semibold mb-1">Hand</div>
+                    <div className="flex gap-0.5 flex-wrap">
+                      {p.hand.map(card => (
+                        <CardFace key={card.id} card={card} size="tiny" hidden={handHidden} dim={isReady} />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Start CTA — emerald to match the hero panel button. Replaces the
+          orange orphan. Disabled state is a faded outline rather than a
+          chunky grey block. */}
+      <div className="mt-1">
         <button
           disabled={!allReady}
           onClick={() => dispatch({ type: 'BEGIN_PLAY' })}
-          className={`px-5 py-2 rounded-lg font-bold ${allReady ? 'bg-amber-500 hover:bg-amber-600 text-white' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`}
-        >Start game</button>
+          className={`w-full sm:w-auto px-6 h-11 rounded-full font-bold text-sm sm:text-base transition-all ${
+            allReady
+              ? 'bg-emerald-500 hover:bg-emerald-400 active:scale-[0.98] text-white shadow-[0_8px_24px_rgba(16,185,129,0.45)]'
+              : 'bg-white/5 text-white/40 ring-1 ring-white/10 cursor-not-allowed'
+          }`}
+        >
+          {allReady ? '▶ Start game' : `Waiting for ${total - readyCount} more…`}
+        </button>
       </div>
     </div>
   );
@@ -3211,6 +3974,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
   const src = me ? activeSource(me, state.deck.length === 0) : null;
   const [sortOn, setSortOn] = useState(true);
   const [logOpen, setLogOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
   // Turn-speed indicator: track how long the current player has been "thinking".
   // Resets whenever state.current changes. Tick once per second so the bar progresses smoothly.
@@ -3528,31 +4292,80 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
           })()}
 
           <div className="border-t border-white/15 pt-3 mx-auto w-full max-w-3xl">
-            <div className="flex items-center justify-between mb-2">
-              <div className="text-xs sm:text-sm text-white/85">
+            <div className="flex items-center justify-between mb-2 gap-3">
+              {/* Status line — small caps label so it reads as a section
+                  heading rather than competing with the buttons on the right. */}
+              <div className="text-[11px] sm:text-xs uppercase tracking-[0.14em] text-white/60 font-semibold truncate">
                 {isSpectator && me && (
                   <>
-                    <span className="text-violet-200 font-semibold">👁 {me.name}'s hand</span>
-                    {state.current === viewer && <span className="ml-1 text-white/60">— their turn</span>}
+                    <span className="text-violet-200">{me.name}'s hand</span>
+                    {state.current === viewer && <span className="ml-1 text-white/40">— their turn</span>}
                   </>
                 )}
                 {!isSpectator && !isMyTurn && <>Waiting for {state.players[state.current].name}…</>}
-                {isMyTurn && src === 'hand' && <>Your hand: <span className="text-white/60">(double-tap to play · 1-9 select · Enter play · P pickup)</span></>}
-                {isMyTurn && src === 'faceUp' && <>Hand & deck empty — playing from face-up.</>}
-                {isMyTurn && src === 'faceDown' && <>Pick a face-down card to flip.</>}
+                {isMyTurn && src === 'hand' && <>Your hand</>}
+                {isMyTurn && src === 'faceUp' && <>Playing from face-up</>}
+                {isMyTurn && src === 'faceDown' && <>Pick a face-down card</>}
               </div>
-              <div className="flex gap-1.5">
+              {/* Single dark-glass segmented control. All three actions share
+                  the same body, dividers, and typography — replaces the prior
+                  mix of beige/grey buttons and a circular outline `?`. */}
+              <div className="flex items-stretch shrink-0 rounded-full bg-slate-900/75 backdrop-blur-md ring-1 ring-white/10 shadow-[0_4px_14px_rgba(0,0,0,0.35)] overflow-hidden text-white">
+                <button
+                  onClick={() => setShortcutsOpen(o => !o)}
+                  className={`px-3 h-8 inline-flex items-center justify-center text-[12px] font-semibold border-r border-white/10 transition-colors ${
+                    shortcutsOpen ? 'bg-white/10 text-white' : 'text-white/80 hover:bg-white/5'
+                  }`}
+                  aria-label="Keyboard & input shortcuts"
+                  aria-expanded={shortcutsOpen}
+                  title="Shortcuts"
+                >
+                  <span className="text-[13px] leading-none">?</span>
+                </button>
                 <button
                   onClick={() => setLogOpen(o => !o)}
-                  className="lg:hidden text-xs px-2 py-1 border border-gray-300 rounded bg-white/70"
+                  className="lg:hidden px-3 h-8 inline-flex items-center justify-center gap-1.5 text-[12px] font-semibold text-white/85 border-r border-white/10 hover:bg-white/5 transition-colors"
                   aria-label="Open game log"
-                >📜 Log</button>
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M4 4h12a4 4 0 0 1 4 4v12H8a4 4 0 0 1-4-4V4z" />
+                    <path d="M8 8h8M8 12h8M8 16h5" />
+                  </svg>
+                  <span>Log</span>
+                </button>
                 <button
                   onClick={() => setSortOn(s => !s)}
-                  className="text-xs px-2 py-1 border border-gray-300 rounded bg-white/70"
-                >{sortOn ? 'Unsorted' : 'Sort'}</button>
+                  className="px-3 h-8 inline-flex items-center justify-center gap-1.5 text-[12px] font-semibold text-white/85 hover:bg-white/5 transition-colors"
+                  title={sortOn ? 'Switch to deal order' : 'Sort by rank'}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    {sortOn
+                      ? <><path d="M3 6h13M3 12h9M3 18h5" /><path d="M17 8l4 4-4 4" /></>
+                      : <><path d="M3 6h7M3 12h11M3 18h15" /></>}
+                  </svg>
+                  <span>{sortOn ? 'Sorted' : 'Sort'}</span>
+                </button>
               </div>
             </div>
+            <AnimatePresence initial={false}>
+              {shortcutsOpen && (
+                <motion.div
+                  key="shortcut-tray"
+                  initial={{ opacity: 0, y: -4, height: 0 }}
+                  animate={{ opacity: 1, y: 0, height: 'auto' }}
+                  exit={{ opacity: 0, y: -4, height: 0 }}
+                  transition={{ duration: 0.18 }}
+                  className="overflow-hidden"
+                >
+                  <div className="mb-2 text-[11px] text-white/80 bg-slate-900/80 ring-1 ring-white/10 rounded-lg px-3 py-2 flex flex-wrap gap-x-4 gap-y-1.5">
+                    <span className="flex items-center gap-1.5"><kbd className="px-1.5 py-0.5 rounded bg-white/15 font-mono text-[10px] text-white">double-tap</kbd> play card</span>
+                    <span className="flex items-center gap-1.5"><kbd className="px-1.5 py-0.5 rounded bg-white/15 font-mono text-[10px] text-white">1–9</kbd> select nth</span>
+                    <span className="flex items-center gap-1.5"><kbd className="px-1.5 py-0.5 rounded bg-white/15 font-mono text-[10px] text-white">Enter</kbd> play selection</span>
+                    <span className="flex items-center gap-1.5"><kbd className="px-1.5 py-0.5 rounded bg-white/15 font-mono text-[10px] text-white">P</kbd> pick up pile</span>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
             {/* Face-down phase: render the player's face-down cards here as the primary interaction surface. */}
             {isMyTurn && src === 'faceDown' && me && (
               <div className="flex gap-3 flex-wrap items-center justify-center">
@@ -3628,12 +4441,19 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
               };
               return (
                 <div
-                  className="flex flex-col items-stretch gap-1 overflow-x-auto overflow-y-visible -mx-3 sm:-mx-4 px-4 sm:px-6 py-2"
-                  // scroll-padding-inline gives the user breathing room when
-                  // they scroll to either end (the leading/trailing card sits
-                  // a card-shoulder away from the clip edge instead of being
-                  // flush against it).
-                  style={{ scrollbarWidth: 'thin', scrollPaddingInline: '1rem' }}
+                  // pt-7 / pb-3 gives the selected-card lift (-translate-y-3,
+                  // ~12px) plus its amber ring and any cuttable/chainable glow
+                  // a clear top buffer. overflow-x: auto silently promotes
+                  // overflow-y to clip per spec, so vertical decorations would
+                  // otherwise get chopped at the container edge.
+                  // overflow-clip-margin extends the clip box slightly so any
+                  // residual shadow doesn't get cut.
+                  className="flex flex-col items-stretch gap-1 overflow-x-auto -mx-3 sm:-mx-4 px-4 sm:px-6 pt-7 pb-3"
+                  style={{
+                    scrollbarWidth: 'thin',
+                    scrollPaddingInline: '1rem',
+                    overflowClipMargin: '12px',
+                  } as React.CSSProperties}
                 >
                   <LayoutGroup>
                     {rows.map((row, rIdx) => {
@@ -4965,6 +5785,7 @@ function LocalGame({ humans, ais, aiSpeed, aiDifficulty, onExit, auth }: { human
     return Math.max(0, idx);
   }, [state.players]);
   const fromDeckIds = useFromDeckTracker(state, _localViewerForDraw);
+  const drawEvents = useAllPlayerDraws(state);
 
   // Local-mode viewer: the most recent HUMAN player. AI turns don't shift this — so
   // when an AI plays, the device keeps showing the human's hand (or hides nothing of theirs).
@@ -5178,9 +5999,17 @@ function LocalGame({ humans, ais, aiSpeed, aiDifficulty, onExit, auth }: { human
       </div>
       <ToastStack toasts={toasts} />
       {body}
-      <DeckDrawOverlay ids={[...fromDeckIds]} />
+      <DeckDrawOverlay events={drawEvents} />
       <AnimatePresence>
-        {dealing && <DealAnimation playerNames={state.players.map(p => p.name)} onComplete={finishDeal} />}
+        {dealing && (
+          <IntroSequence
+            players={state.players.map(p => ({ name: p.name, isAi: p.isAi }))}
+            avatars={localAvatars}
+            mode={state.mode}
+            aiDifficulty={aiDifficulty}
+            onComplete={finishDeal}
+          />
+        )}
         {reveal && <RevealOverlay key={reveal.ts} playerName={reveal.name} card={reveal.card} />}
       </AnimatePresence>
     </>
@@ -5196,6 +6025,7 @@ function NetworkGame({ onExit, prefilledCode, auth }: { onExit: () => void; pref
   const reveal = useRevealOverlay(conn.state);
   const myId = conn.session?.spectator ? -1 : conn.lobby?.myId ?? 0;
   const fromDeckIds = useFromDeckTracker(conn.state, myId);
+  const drawEvents = useAllPlayerDraws(conn.state);
 
   const dispatch = (action: Action) => conn.send({ t: 'ACT', action });
   // Pull avatars from the lobby per seat (online players supply their own
@@ -5293,9 +6123,17 @@ function NetworkGame({ onExit, prefilledCode, auth }: { onExit: () => void; pref
       <ToastStack toasts={toasts} />
       <ConnectionPill status={conn.status} attempt={conn.reconnectAttempt} />
       {body}
-      <DeckDrawOverlay ids={[...fromDeckIds]} />
+      <DeckDrawOverlay events={drawEvents} />
       <AnimatePresence>
-        {dealing && conn.state && <DealAnimation playerNames={conn.state.players.map(p => p.name)} onComplete={finishDeal} />}
+        {dealing && conn.state && (
+          <IntroSequence
+            players={conn.state.players.map(p => ({ name: p.name, isAi: p.isAi }))}
+            avatars={netAvatars}
+            mode={conn.state.mode}
+            aiDifficulty={conn.state.aiDifficulty}
+            onComplete={finishDeal}
+          />
+        )}
         {reveal && <RevealOverlay key={reveal.ts} playerName={reveal.name} card={reveal.card} />}
       </AnimatePresence>
     </>
