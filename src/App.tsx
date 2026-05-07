@@ -3560,60 +3560,80 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
               </div>
             )}
             {src && src !== 'faceDown' && (() => {
-              // Hand layout: single row with horizontal scroll, plus a card
-              // overlap when count > 9 so a 25-card hand stays visually
-              // bounded instead of wrapping to multiple rows (which used to
-              // squeeze the table area and overlap the centre piles with the
-              // viewer's tile). Overlap caps at ~36px (≈half a card width)
-              // so even a huge hand stays readable.
+              // Hand layout — adaptive across three regimes so the table area
+              // stays put no matter how many cards the viewer is holding:
+              //   • ≤9 cards: single row, no overlap (the common case)
+              //   • 10–18 cards: single row with progressive overlap (cap 36px)
+              //   • 19+ cards: TWO rows, each with its own modest overlap so
+              //     each card stays readable. Splitting beats squeezing 22+
+              //     cards into one row where they'd be slivers.
+              // Horizontal scroll remains a fallback if even two rows would
+              // overflow on a very narrow viewport.
               const handLen = displayCards.length;
-              const overlap = handLen > 9 ? Math.min(36, (handLen - 9) * 3.5) : 0;
+              const useTwoRows = handLen >= 19;
+              const rows: typeof displayCards[] = useTwoRows
+                ? [displayCards.slice(0, Math.ceil(handLen / 2)),
+                   displayCards.slice(Math.ceil(handLen / 2))]
+                : [displayCards];
+              // Per-row overlap is computed off that row's length so each row
+              // stays balanced even when the split is uneven by one card.
+              const overlapForRow = (rowLen: number) =>
+                rowLen > 9 ? Math.min(36, (rowLen - 9) * 3.5) : 0;
+              const renderCard = (c: typeof displayCards[number], i: number, rowOverlap: number, baseIndex: number) => {
+                const wouldBeOk = isMyTurn ? canPlayCards([c], state.pile, state.sevenRestriction) : true;
+                const isCutMatch = canCut && myCutMatches.some(m => m.id === c.id);
+                const isChainMatch = isCutMatch && isChainOpportunity;
+                // One-click out-of-turn play: clicking a glowing card fires CUT.
+                const onClick = isMyTurn
+                  ? () => dispatch({ type: 'TOGGLE_SELECT', id: c.id })
+                  : isCutMatch
+                    ? () => dispatch({ type: 'CUT', player: viewer, ids: myCutMatches.map(m => m.id) })
+                    : undefined;
+                // Double-tap shortcut — play this card immediately as a
+                // single-card play. Only fires when (a) it's your turn,
+                // (b) the card alone is a legal play, and (c) we're
+                // playing from hand or face-up (face-down has its own
+                // flow). Multi-card plays still need select + Play.
+                const canFastPlay = isMyTurn && wouldBeOk && (src === 'hand' || src === 'faceUp');
+                const onDoubleClick = canFastPlay
+                  ? () => dispatch({ type: 'PLAY_CARDS', ids: [c.id] })
+                  : undefined;
+                return (
+                  <div
+                    key={c.id}
+                    className="shrink-0 relative hover:z-20"
+                    style={{ marginLeft: i === 0 ? 0 : -rowOverlap, zIndex: baseIndex + i }}
+                  >
+                    <AnimatedCard
+                      layoutId={c.id} card={c}
+                      fromDeck={fromDeckIds?.has(c.id)}
+                      selected={state.selected.includes(c.id)}
+                      dim={isMyTurn && !wouldBeOk && state.selected.length === 0}
+                      cuttable={isCutMatch && !isChainMatch}
+                      chainable={isChainMatch}
+                      onClick={onClick}
+                      onDoubleClick={onDoubleClick}
+                    />
+                  </div>
+                );
+              };
               return (
-              <div
-                className="flex justify-center items-end overflow-x-auto overflow-y-visible -mx-3 sm:-mx-4 px-3 sm:px-4 py-2"
-                style={{ scrollbarWidth: 'thin' }}
-              >
-                <LayoutGroup>
-                  {displayCards.map((c, i) => {
-                    const wouldBeOk = isMyTurn ? canPlayCards([c], state.pile, state.sevenRestriction) : true;
-                    const isCutMatch = canCut && myCutMatches.some(m => m.id === c.id);
-                    const isChainMatch = isCutMatch && isChainOpportunity;
-                    // One-click out-of-turn play: clicking a glowing card fires CUT.
-                    const onClick = isMyTurn
-                      ? () => dispatch({ type: 'TOGGLE_SELECT', id: c.id })
-                      : isCutMatch
-                        ? () => dispatch({ type: 'CUT', player: viewer, ids: myCutMatches.map(m => m.id) })
-                        : undefined;
-                    // Double-tap shortcut — play this card immediately as a
-                    // single-card play. Only fires when (a) it's your turn,
-                    // (b) the card alone is a legal play, and (c) we're
-                    // playing from hand or face-up (face-down has its own
-                    // flow). Multi-card plays still need select + Play.
-                    const canFastPlay = isMyTurn && wouldBeOk && (src === 'hand' || src === 'faceUp');
-                    const onDoubleClick = canFastPlay
-                      ? () => dispatch({ type: 'PLAY_CARDS', ids: [c.id] })
-                      : undefined;
-                    return (
-                    <div
-                      key={c.id}
-                      className="shrink-0 relative hover:z-20"
-                      style={{ marginLeft: i === 0 ? 0 : -overlap, zIndex: i }}
-                    >
-                      <AnimatedCard
-                        layoutId={c.id} card={c}
-                        fromDeck={fromDeckIds?.has(c.id)}
-                        selected={state.selected.includes(c.id)}
-                        dim={isMyTurn && !wouldBeOk && state.selected.length === 0}
-                        cuttable={isCutMatch && !isChainMatch}
-                        chainable={isChainMatch}
-                        onClick={onClick}
-                        onDoubleClick={onDoubleClick}
-                      />
-                    </div>
-                    );
-                  })}
-                </LayoutGroup>
-              </div>
+                <div
+                  className="flex flex-col items-stretch gap-1 overflow-x-auto overflow-y-visible -mx-3 sm:-mx-4 px-3 sm:px-4 py-2"
+                  style={{ scrollbarWidth: 'thin' }}
+                >
+                  <LayoutGroup>
+                    {rows.map((row, rIdx) => {
+                      const rowOverlap = overlapForRow(row.length);
+                      const baseIndex = rIdx === 0 ? 0 : rows[0].length;
+                      return (
+                        <div key={rIdx} className="flex justify-center items-end">
+                          {row.map((c, i) => renderCard(c, i, rowOverlap, baseIndex))}
+                        </div>
+                      );
+                    })}
+                  </LayoutGroup>
+                </div>
               );
             })()}
           </div>
