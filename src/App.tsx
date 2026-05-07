@@ -3559,10 +3559,22 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
                 <span className="text-xs text-gray-600 italic">Tap one to flip blind.</span>
               </div>
             )}
-            {src && src !== 'faceDown' && (
-              <div className="flex gap-2 flex-wrap justify-center">
+            {src && src !== 'faceDown' && (() => {
+              // Hand layout: single row with horizontal scroll, plus a card
+              // overlap when count > 9 so a 25-card hand stays visually
+              // bounded instead of wrapping to multiple rows (which used to
+              // squeeze the table area and overlap the centre piles with the
+              // viewer's tile). Overlap caps at ~36px (≈half a card width)
+              // so even a huge hand stays readable.
+              const handLen = displayCards.length;
+              const overlap = handLen > 9 ? Math.min(36, (handLen - 9) * 3.5) : 0;
+              return (
+              <div
+                className="flex justify-center items-end overflow-x-auto overflow-y-visible -mx-3 sm:-mx-4 px-3 sm:px-4 py-2"
+                style={{ scrollbarWidth: 'thin' }}
+              >
                 <LayoutGroup>
-                  {displayCards.map(c => {
+                  {displayCards.map((c, i) => {
                     const wouldBeOk = isMyTurn ? canPlayCards([c], state.pile, state.sevenRestriction) : true;
                     const isCutMatch = canCut && myCutMatches.some(m => m.id === c.id);
                     const isChainMatch = isCutMatch && isChainOpportunity;
@@ -3582,8 +3594,13 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
                       ? () => dispatch({ type: 'PLAY_CARDS', ids: [c.id] })
                       : undefined;
                     return (
+                    <div
+                      key={c.id}
+                      className="shrink-0 relative hover:z-20"
+                      style={{ marginLeft: i === 0 ? 0 : -overlap, zIndex: i }}
+                    >
                       <AnimatedCard
-                        key={c.id} layoutId={c.id} card={c}
+                        layoutId={c.id} card={c}
                         fromDeck={fromDeckIds?.has(c.id)}
                         selected={state.selected.includes(c.id)}
                         dim={isMyTurn && !wouldBeOk && state.selected.length === 0}
@@ -3592,11 +3609,13 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
                         onClick={onClick}
                         onDoubleClick={onDoubleClick}
                       />
+                    </div>
                     );
                   })}
                 </LayoutGroup>
               </div>
-            )}
+              );
+            })()}
           </div>
 
           {/* Action bar — sticky, always-mounted, always one row. Modern
