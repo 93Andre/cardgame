@@ -352,7 +352,51 @@ function playCardsByIds(state: GameState, ids: string[]): GameState {
     if (handSelected.length > 0) return state;
   }
 
-  if (!canPlayCards(cards, state.pile, state.sevenRestriction)) return state;
+  if (!canPlayCards(cards, state.pile, state.sevenRestriction)) {
+    // House rule: when the active source is face-up and the player commits a
+    // SINGLE face-up card that turns out to be illegal, force a pickup —
+    // the pile + that face-up card join the player's hand and the turn
+    // passes. Mirrors the existing face-down "flipped illegal → pickup"
+    // path but driven explicitly by the player.
+    //
+    // Multi-card illegal attempts are NOT allowed (e.g. you can't gamble
+    // two face-up 4s onto a King and have both come back with the pile).
+    // The selection is rejected as before.
+    if (src === 'faceUp' && faceUpSelected.length === 1 && handSelected.length === 0) {
+      const card = faceUpSelected[0];
+      const players = state.players.slice();
+      const picked = [...state.pile.map(e => e.card), card];
+      const np: Player = {
+        ...p,
+        faceUp: p.faceUp.filter(c => c.id !== card.id),
+        hand: [...p.hand, ...picked],
+      };
+      players[state.current] = np;
+      const bumped = bumpStats(state, state.current, { pickups: 1 });
+      const prevLargest = (state.stats[state.current] ?? emptyStats()).largestPile;
+      const newStats = {
+        ...bumped,
+        [state.current]: { ...bumped[state.current], largestPile: Math.max(prevLargest, picked.length) },
+      };
+      const direction = state.direction;
+      const current = nextActiveIndex(players, state.current, direction);
+      return {
+        ...state,
+        players,
+        pile: [],
+        selected: [],
+        sevenRestriction: false,
+        flippedCard: null,
+        phase: 'pass',
+        current,
+        lastWasMine: false,
+        lastPlayerId: null,
+        stats: newStats,
+        log: logLine(state, `${p.name} tried face-up ${card.rank}${card.suit} — illegal! Picks up ${picked.length}.`),
+      };
+    }
+    return state;
+  }
 
   let pile = state.pile.slice();
   for (const c of cards) {

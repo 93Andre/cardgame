@@ -3410,6 +3410,15 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
     (state.deck.length === 0 && selectedHand.length === (me?.hand.length ?? 0));
   const canPlay = isMyTurn && selectedAll.length > 0 && chainOk && canPlayCards(selectedAll, state.pile, state.sevenRestriction);
   const anyLegal = sourceCards.some(c => canPlayCards([c], state.pile, state.sevenRestriction));
+  // Face-up gamble: when the active source is face-up and the player has
+  // committed exactly one face-up card that turns out to be illegal, the
+  // reducer's house rule forces a pickup of the pile + that card. The
+  // button stays clickable so the player can opt in deliberately, but it
+  // changes label/colour so the consequence is unmistakable. Multi-card
+  // illegal attempts are not allowed (you can't gamble two face-up cards
+  // and pick up both with the pile).
+  const isFaceUpIllegalCommit =
+    isMyTurn && src === 'faceUp' && !canPlay && selectedAll.length === 1 && selectedFaceUp.length === 1;
 
   // Keyboard shortcuts: 1-9 to toggle nth card, Enter to play, P to pickup.
   useEffect(() => {
@@ -3661,15 +3670,20 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
             <div className="sticky bottom-0 left-0 right-0 z-20 mt-2 pb-3 pt-2 px-3 -mx-3 sm:-mx-4 flex items-center gap-2 justify-center pointer-events-none">
               <div className="flex items-center gap-1.5 p-1 rounded-full bg-slate-900/80 backdrop-blur-md ring-1 ring-white/10 shadow-[0_8px_24px_rgba(0,0,0,0.45)] pointer-events-auto">
                 <button
-                  disabled={!canPlay}
+                  disabled={!canPlay && !isFaceUpIllegalCommit}
                   onClick={() => dispatch({ type: 'PLAY_SELECTED' })}
+                  title={isFaceUpIllegalCommit ? 'Illegal face-up card — clicking will pick up the pile + this card' : undefined}
                   className={`px-4 sm:px-5 h-9 sm:h-10 rounded-full text-sm font-semibold flex items-center gap-1.5 transition-all ${
                     canPlay
                       ? 'bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-white shadow-[0_4px_12px_rgba(16,185,129,0.45)]'
-                      : 'text-white/35 cursor-not-allowed'
+                      : isFaceUpIllegalCommit
+                        ? 'bg-amber-500 hover:bg-amber-400 active:scale-95 text-white shadow-[0_4px_12px_rgba(245,158,11,0.45)] ring-2 ring-amber-300/60'
+                        : 'text-white/35 cursor-not-allowed'
                   }`}
                 >
-                  <span aria-hidden>▶</span> Play
+                  {isFaceUpIllegalCommit
+                    ? <><span aria-hidden>⚠</span> Try (illegal → pick up)</>
+                    : <><span aria-hidden>▶</span> Play</>}
                 </button>
                 <button
                   disabled={!isMyTurn || state.pile.length === 0}
