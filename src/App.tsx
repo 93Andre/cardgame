@@ -3222,6 +3222,98 @@ function DetailStat({ icon, label, value, suffix }: { icon: string; label: strin
   );
 }
 
+// PWA install prompt. Browsers fire `beforeinstallprompt` once when the
+// app meets installability criteria (manifest + SW + first interaction).
+// We stash the event and surface a small "Install app" pill the user can
+// click — calling `prompt()` shows the native install dialog. After the
+// user accepts/dismisses, the event is consumed and the pill hides.
+//
+// On iOS the event isn't fired (Safari uses a manual Share → Add to Home
+// Screen flow), so we fall back to a static "Add to Home Screen" hint
+// when the app isn't already running standalone and the device looks
+// like iOS. Hides itself after the user has installed.
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
+}
+function InstallAppButton() {
+  const [deferred, setDeferred] = useState<BeforeInstallPromptEvent | null>(null);
+  const [iosPromptVisible, setIosPromptVisible] = useState(false);
+  const [installed, setInstalled] = useState(false);
+
+  useEffect(() => {
+    // Already running as an installed PWA? Nothing to offer.
+    const standalone =
+      window.matchMedia?.('(display-mode: standalone)').matches ||
+      // iOS-specific
+      (navigator as unknown as { standalone?: boolean }).standalone === true;
+    if (standalone) { setInstalled(true); return; }
+
+    const onPrompt = (e: Event) => {
+      e.preventDefault();
+      setDeferred(e as BeforeInstallPromptEvent);
+    };
+    const onInstalled = () => { setInstalled(true); setDeferred(null); };
+    window.addEventListener('beforeinstallprompt', onPrompt);
+    window.addEventListener('appinstalled', onInstalled);
+
+    // iOS Safari fallback — never fires beforeinstallprompt. Show a static
+    // hint when the user hasn't dismissed it before.
+    const ua = navigator.userAgent;
+    const isIOS = /iPad|iPhone|iPod/.test(ua) && !(/CriOS|FxiOS|EdgiOS/.test(ua));
+    const dismissed = localStorage.getItem('ph_ios_install_dismissed') === '1';
+    if (isIOS && !dismissed) setIosPromptVisible(true);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onPrompt);
+      window.removeEventListener('appinstalled', onInstalled);
+    };
+  }, []);
+
+  if (installed) return null;
+
+  if (deferred) {
+    return (
+      <button
+        onClick={async () => {
+          try {
+            await deferred.prompt();
+            await deferred.userChoice;
+          } catch { /* ignore */ }
+          setDeferred(null);
+        }}
+        className="px-3 h-9 rounded-full text-xs sm:text-sm font-semibold flex items-center gap-1.5 bg-emerald-500/90 hover:bg-emerald-400 text-white shadow-[0_4px_14px_rgba(16,185,129,0.35)] transition-colors"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <path d="M12 3v12M7 10l5 5 5-5M5 21h14" />
+        </svg>
+        Install app
+      </button>
+    );
+  }
+
+  if (iosPromptVisible) {
+    return (
+      <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-900/70 ring-1 ring-white/10 text-white/85 text-[11px] sm:text-xs max-w-xs">
+        <span aria-hidden className="text-base shrink-0">📲</span>
+        <span className="leading-snug">
+          Install on iPhone: tap <span className="font-bold">Share</span>, then <span className="font-bold">Add to Home Screen</span>.
+        </span>
+        <button
+          onClick={() => {
+            try { localStorage.setItem('ph_ios_install_dismissed', '1'); } catch { /* ignore */ }
+            setIosPromptVisible(false);
+          }}
+          aria-label="Dismiss"
+          className="ml-1 text-white/50 hover:text-white/90 leading-none px-1"
+        >×</button>
+      </div>
+    );
+  }
+
+  return null;
+}
+
 function MenuScreen({ onLocal, onNetwork, onLeaderboard, onProfile, prefilledCode, auth }: { onLocal: () => void; onNetwork: (code?: string) => void; onLeaderboard: () => void; onProfile: () => void; prefilledCode?: string; auth: AuthState }) {
   const localStatsLS = loadStats();
   const localName = loadName();
@@ -3254,6 +3346,10 @@ function MenuScreen({ onLocal, onNetwork, onLeaderboard, onProfile, prefilledCod
       <p className="max-w-xl text-center text-white/85 text-sm sm:text-base">
         A shedding card game. Get rid of all your cards. Last one holding cards is the Poop Head 💩.
       </p>
+      {/* PWA install — only renders when the browser fires beforeinstallprompt
+          (Chromium/Edge/Android) or when running on iOS Safari with the
+          static fallback hint. Self-hides if already installed. */}
+      <InstallAppButton />
       {(displayName || games > 0) && (
         <div className="flex items-center gap-3 text-xs sm:text-sm bg-white/15 backdrop-blur-sm border border-white/25 rounded-full px-4 py-1.5 text-white/95">
           {displayName && (
@@ -5250,24 +5346,66 @@ function EndScreen({ state, onPlayAgain, canPlayAgain = true, awaitingHost = fal
         </table>
       </div>
 
-      <div className="flex flex-col items-center gap-2 z-10">
-        <div className="flex gap-2 items-center">
-          {canPlayAgain && (
-            <button onClick={onPlayAgain} className="px-6 py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-lg shadow">
-              {awaitingHost ? '🔄 Rematch' : '🔄 Play again'}
-            </button>
-          )}
-          <ShareScorecardButton state={state} />
-        </div>
-        {awaitingHost && !canPlayAgain && (
-          <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-slate-900/80 backdrop-blur-md ring-1 ring-white/15 text-white text-sm font-semibold shadow-lg">
-            <motion.span
-              animate={{ opacity: [0.4, 1, 0.4] }}
-              transition={{ repeat: Infinity, duration: 1.4 }}
-            >⏳</motion.span>
-            Waiting for host to start a rematch…
+      {/* Rematch panel — a single one-tap "same seats" CTA replaces the
+          old "Play again" button. The seat strip makes it explicit who
+          you're queuing up against, so there's no ambiguity about whether
+          rematch keeps the same lineup. Loser is tagged with a 💩 chip;
+          everyone else is neutral. Online: non-host viewers see the
+          identical strip with a "waiting for host" status. */}
+      <div className="z-10 w-full max-w-2xl flex flex-col items-center gap-3">
+        <div className="w-full rounded-2xl bg-slate-900/80 backdrop-blur-md ring-1 ring-white/10 shadow-[0_12px_36px_rgba(0,0,0,0.45)] p-4 flex flex-col gap-3">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex flex-col">
+              <span className="text-[10px] uppercase tracking-[0.18em] text-emerald-300/80 font-semibold">Quick rematch</span>
+              <span className="text-white text-base font-bold">Same seats, new deal</span>
+            </div>
+            {canPlayAgain ? (
+              <button
+                onClick={onPlayAgain}
+                className="px-5 h-11 rounded-full bg-emerald-500 hover:bg-emerald-400 active:scale-[0.97] text-white font-bold shadow-[0_8px_24px_rgba(16,185,129,0.45)] transition-all flex items-center gap-2"
+              >
+                <span aria-hidden>▶</span>
+                Play again
+              </button>
+            ) : (
+              <span className="flex items-center gap-2 px-3 h-9 rounded-full bg-white/5 ring-1 ring-white/10 text-white/75 text-xs font-semibold">
+                <motion.span
+                  animate={{ opacity: [0.4, 1, 0.4] }}
+                  transition={{ repeat: Infinity, duration: 1.4 }}
+                  aria-hidden
+                >⏳</motion.span>
+                Waiting for host…
+              </span>
+            )}
           </div>
-        )}
+          {/* Seat strip — coloured dot + name + status chip per player. */}
+          <div className="flex flex-wrap gap-1.5">
+            {state.players.map(p => {
+              const isLoser = p.id === state.poopHead;
+              const isWinner = p.finishPos === 1;
+              const c = colorFor(p.id);
+              return (
+                <div
+                  key={p.id}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold ring-1 ${
+                    isLoser
+                      ? 'bg-rose-500/15 ring-rose-400/30 text-rose-100'
+                      : isWinner
+                        ? 'bg-amber-400/15 ring-amber-400/40 text-amber-100'
+                        : 'bg-white/5 ring-white/10 text-white/80'
+                  }`}
+                >
+                  <span className={`inline-block w-1.5 h-1.5 rounded-full ${c.dot}`} />
+                  <span className="truncate max-w-[120px]">{p.name}</span>
+                  {p.isAi && <span className="text-[9px] px-1 py-0 rounded bg-white/10 text-white/70 font-bold tracking-wide">AI</span>}
+                  {isLoser && <span aria-hidden className="text-xs leading-none">💩</span>}
+                  {isWinner && <span aria-hidden className="text-xs leading-none">👑</span>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <ShareScorecardButton state={state} />
       </div>
     </div>
   );
