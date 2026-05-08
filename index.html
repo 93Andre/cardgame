@@ -4,12 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>💩 Latrine</title>
-    <meta name="theme-color" content="#a78bfa" />
+    <meta name="theme-color" content="#2c5d44" />
     <meta name="description" content="Latrine — a shedding card game. Last player holding cards is the Poop Head." />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <!-- iOS standalone home-screen launch. status-bar-style "black-translucent"
+         lets the felt background bleed under the system status bar so the
+         game looks fullscreen on installed iPhones. -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Latrine" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <link rel="apple-touch-icon" href="/icon.svg" />
 
     <!-- Google Analytics (gtag.js, GA4). Loaded async so it doesn't block
