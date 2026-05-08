@@ -5259,7 +5259,7 @@ function FlipScreen({ state, dispatch, viewerId }: {
   );
 }
 
-function EndScreen({ state, onPlayAgain, canPlayAgain = true, awaitingHost = false }: { state: GameState; onPlayAgain: () => void; canPlayAgain?: boolean; awaitingHost?: boolean }) {
+function EndScreen({ state, onPlayAgain, canPlayAgain = true, awaitingHost = false, onCloseRoom }: { state: GameState; onPlayAgain: () => void; canPlayAgain?: boolean; awaitingHost?: boolean; onCloseRoom?: () => void }) {
   const loser = state.players.find(p => p.id === state.poopHead);
   const order = state.players
     .filter(p => p.finishPos !== null)
@@ -5445,6 +5445,17 @@ function EndScreen({ state, onPlayAgain, canPlayAgain = true, awaitingHost = fal
           </div>
         </div>
         <ShareScorecardButton state={state} />
+        {/* Host-only "Close room" — sends everyone back to the menu and
+            frees the room code. Renders as a low-emphasis text link so
+            it doesn't compete with the rematch CTA above. */}
+        {onCloseRoom && (
+          <button
+            onClick={onCloseRoom}
+            className="text-xs text-white/60 hover:text-rose-300 underline underline-offset-2"
+          >
+            Close room
+          </button>
+        )}
       </div>
     </div>
   );
@@ -6307,6 +6318,11 @@ function NetworkGame({ onExit, prefilledCode, auth }: { onExit: () => void; pref
             onPlayAgain={() => conn.send({ t: 'PLAY_AGAIN' })}
             canPlayAgain={isHost}
             awaitingHost={!isHost}
+            onCloseRoom={isHost ? () => {
+              if (window.confirm('Close this room? Everyone will be kicked back to the menu.')) {
+                conn.send({ t: 'DELETE_ROOM' });
+              }
+            } : undefined}
           />
         );
         break;
@@ -6322,10 +6338,35 @@ function NetworkGame({ onExit, prefilledCode, auth }: { onExit: () => void; pref
     conn.disconnect();
     onExit();
   };
+  // Host-only "close room" — kicks everyone back to the menu and frees the
+  // room code. Mid-game uses a stronger two-line confirmation since it's
+  // a big, irreversible action everyone's affected by; lobby/end screens
+  // get a single-line confirmation. Available throughout the network
+  // session so a host can wind things down anytime.
+  const isHostNet = !!conn.lobby && conn.lobby.myId === conn.lobby.hostId;
+  const handleCloseRoom = () => {
+    const inGame = !!(conn.state && conn.state.phase !== 'end');
+    const msg = inGame
+      ? "Close the room mid-game?\n\nThis will end the match for everyone and they'll be sent back to the menu. This cannot be undone."
+      : 'Close this room? Everyone will be sent back to the menu.';
+    if (!window.confirm(msg)) return;
+    conn.send({ t: 'DELETE_ROOM' });
+  };
   return (
     <>
       <div className="fixed top-3 left-3 z-50 flex flex-col items-start gap-1">
-        <button onClick={handleLeave} className="text-xs px-2 py-1 bg-white/80 border rounded">← menu</button>
+        <div className="flex gap-1.5">
+          <button onClick={handleLeave} className="text-xs px-2 py-1 bg-white/80 border rounded">← menu</button>
+          {isHostNet && (
+            <button
+              onClick={handleCloseRoom}
+              className="text-xs px-2 py-1 bg-rose-500/90 hover:bg-rose-500 text-white border border-rose-700/50 rounded font-semibold"
+              title="Close the room for everyone (host only)"
+            >
+              Close room
+            </button>
+          )}
+        </div>
         {conn.state?.mode === 'ultimate' && <div className="text-[10px] px-2 py-0.5 bg-fuchsia-100 text-fuchsia-800 border border-fuchsia-300 rounded">Ultimate</div>}
       </div>
       <ToastStack toasts={toasts} />
