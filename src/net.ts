@@ -72,7 +72,15 @@ export interface NetworkConn {
   error: string | null;
   reconnectAttempt: number;     // increments while we're retrying after a drop
   send: (msg: ClientMsg) => void;
+  // Plain disconnect — closes the socket without telling the server. Used
+  // for "going to the menu but might come back" flows (the server keeps
+  // the seat open for RESUME).
   disconnect: () => void;
+  // Intentional leave — sends a LEAVE message first, then closes. The
+  // server takes this as the signal to give up the seat (lobby: free it;
+  // mid-game: convert to AI so the match can continue). Client clears its
+  // session token regardless.
+  leave: () => void;
   clearError: () => void;
 }
 
@@ -226,6 +234,20 @@ export function useNetwork(active: boolean): NetworkConn {
     setLobby(null); setState(null); setStatus('closed'); setError(null);
     attemptRef.current = 0; setReconnectAttempt(0);
   };
+  const leave = () => {
+    // Tell the server first — that's how it knows this is an explicit
+    // leave (give up the seat / convert to AI mid-game) rather than a
+    // network drop (preserve the seat for RESUME). Falls through to the
+    // normal disconnect even if the send fails (e.g. socket already
+    // closed) so we don't strand the user on a dead screen.
+    const ws = wsRef.current;
+    try {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ t: 'LEAVE' } as ClientMsg));
+      }
+    } catch { /* ignore */ }
+    disconnect();
+  };
   const clearError = () => setError(null);
-  return { status, lobby, state, session, rooms, error, reconnectAttempt, send, disconnect, clearError };
+  return { status, lobby, state, session, rooms, error, reconnectAttempt, send, disconnect, leave, clearError };
 }

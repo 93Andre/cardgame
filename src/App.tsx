@@ -6334,8 +6334,12 @@ function NetworkGame({ onExit, prefilledCode, auth }: { onExit: () => void; pref
   // is a common frustration. End/lobby phases can leave silently.
   const handleLeave = () => {
     const inGame = conn.state && conn.state.phase !== 'end';
-    if (inGame && !window.confirm('Leave this game? Your seat will stay open until the room times out, but you give up your hand.')) return;
-    conn.disconnect();
+    if (inGame && !window.confirm('Leave this game? An AI will take over your seat for the rest of the match — you can\'t come back to it.')) return;
+    // leave() sends an explicit LEAVE message first so the server knows
+    // to free the seat / replace with AI. disconnect() (close-only) is
+    // reserved for the menu-from-end-screen path where there's nothing
+    // to give up.
+    if (inGame) conn.leave(); else conn.disconnect();
     onExit();
   };
   // Host-only "close room" — kicks everyone back to the menu and frees the

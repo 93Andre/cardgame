@@ -629,16 +629,43 @@ wss.on('connection', ws => {
           room.spectators.delete(ws);
         } else if (!room.state) {
           // Lobby phase: free the seat entirely so a future JOIN doesn't
-          // create a duplicate of the leaving player. Without this the
-          // player record stayed in room.players with ws=null, and a
-          // re-JOIN from the same client appended a NEW seat (visible as
-          // the user duplicating themselves).
+          // create a duplicate of the leaving player.
           removePlayerFromLobby(room, ref.id);
         } else {
-          // In-game: keep the slot intact so the player can RESUME via
-          // their session token if they reconnect.
+          // In-game LEAVE = intentional. Convert the seat to AI so the
+          // match can continue without stalling on a player who's gone.
+          // (Plain ws.close — backgrounded app, network drop, etc — is
+          // handled in `ws.on('close')` below and still preserves the
+          // slot for RESUME via session token.)
           const player = room.players[ref.id];
-          if (player) player.ws = null;
+          if (player) {
+            player.ws = null;
+            player.isAi = true;
+            // Invalidate the resume token so a stale localStorage session
+            // can't claim the slot back after AI takeover.
+            player.token = '';
+            // Surface to everyone watching: log line + a connection-state
+            // bump so the AWAY pip clears immediately.
+            if (room.state) {
+              room.state = {
+                ...room.state,
+                players: room.state.players.map((p, i) =>
+                  i === ref.id ? { ...p, isAi: true } : p
+                ),
+                log: [...room.state.log, `${player.name} left — AI takes over.`].slice(-50),
+              };
+            }
+            // Promote a still-connected human to host if the leaver was
+            // host (otherwise non-host players can't START / DELETE_ROOM
+            // for the rest of the match).
+            if (ref.id === room.hostId) {
+              const newHost = room.players.find(p => !p.isAi && p.ws !== null);
+              if (newHost) room.hostId = newHost.id;
+            }
+            // Kick the AI scheduler so if it was the leaver's turn the
+            // bot acts immediately instead of the table sitting idle.
+            scheduleAi(room);
+          }
         }
         broadcast(room);
         socketToRoom.delete(ws);
