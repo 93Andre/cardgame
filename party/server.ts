@@ -571,12 +571,32 @@ export default class GameServer implements Party.Server {
         if (ref.spectator) {
           room.spectators.delete(sender);
         } else if (!room.state) {
-          // Lobby: free the seat entirely so a future JOIN doesn't
-          // duplicate the leaver. See node server.ts for full rationale.
           this.removePlayerFromLobby(room, ref.id);
         } else {
+          // In-game LEAVE = intentional. Convert seat to AI so the
+          // match keeps moving instead of stalling. Plain conn close
+          // (network drop / backgrounding) is handled in onClose below
+          // and still preserves the slot for RESUME via session token.
           const player = room.players[ref.id];
-          if (player) player.conn = null;
+          if (player) {
+            player.conn = null;
+            player.isAi = true;
+            player.token = '';
+            if (room.state) {
+              room.state = {
+                ...room.state,
+                players: room.state.players.map((p, i) =>
+                  i === ref.id ? { ...p, isAi: true } : p
+                ),
+                log: [...room.state.log, `${player.name} left — AI takes over.`].slice(-50),
+              };
+            }
+            if (ref.id === room.hostId) {
+              const newHost = room.players.find(p => !p.isAi && p.conn !== null);
+              if (newHost) room.hostId = newHost.id;
+            }
+            this.scheduleAi(room);
+          }
         }
         this.broadcast(room);
         this.persist();
