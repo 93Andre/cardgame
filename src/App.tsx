@@ -818,10 +818,22 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
     layout === 'desktop'  ? (n <= 3 ? 0.42 : n <= 4 ? 0.46 : 0.48) :
     layout === 'landscape' ? (n <= 3 ? 0.42 : 0.45) :
     n <= 3 ? 0.34 : 0.40;
+  // Vertical radius. Restored to 0.36 for 4+ on desktop (the smaller
+  // 0.32 stopped the top tile from clipping the StatusBar but pulled the
+  // side seats too close together vertically — 6-player layouts had
+  // adjacent left/right tiles overlapping each other). The top-tile
+  // clearance issue is now solved separately via yOffset below, which
+  // shifts the WHOLE ellipse down a few % so the top doesn't crowd the
+  // status bar while the sides keep their full vertical spread.
   const ry =
-    layout === 'desktop'   ? (n <= 3 ? 0.34 : 0.36) :
+    layout === 'desktop'   ? (n <= 3 ? 0.32 : 0.36) :
     layout === 'landscape' ? (n <= 3 ? 0.34 : 0.38) :
                              (n <= 3 ? 0.40 : 0.42);
+  // y-offset applied to every tile's vertical position. Pushes the whole
+  // ellipse down a few % so the top tile clears the StatusBar/menu pill.
+  // Modest values across the board — too large pushes the viewer's own
+  // bottom tile off the container.
+  const yOffset = 5;
 
   return (
     <div
@@ -893,7 +905,7 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
         const baseAngle = 90 + (slot / n) * 360;
         const angle = baseAngle * Math.PI / 180;
         const xPct = 50 + Math.cos(angle) * rx * 100;
-        const yPct = 50 + Math.sin(angle) * ry * 100;
+        const yPct = 50 + Math.sin(angle) * ry * 100 + yOffset;
         return (
           <div
             key={p.id}
@@ -909,7 +921,10 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
         );
       })}
 
-      <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+      <div
+        className="absolute left-1/2 -translate-x-1/2 -translate-y-1/2"
+        style={{ top: `${50 + yOffset}%` }}
+      >
         {centerContent}
       </div>
 
@@ -924,29 +939,41 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
           const baseAngle = 90 + (slot / n) * 360;
           const angle = baseAngle * Math.PI / 180;
           const sourceX = 50 + Math.cos(angle) * rx * 100;
-          const sourceY = 50 + Math.sin(angle) * ry * 100;
-          return playAnim.cards.map((c, i) => (
-            <motion.div
-              key={`play-${playAnim.key}-${c.id}`}
-              initial={{
-                left: `${sourceX}%`, top: `${sourceY}%`,
-                x: '-50%', y: '-50%',
-                scale: 0.6, opacity: 0, rotate: (i - playAnim.cards.length / 2) * 5,
-              }}
-              animate={{
-                left: '50%', top: '50%',
-                x: '-50%', y: '-50%',
-                scale: 1, opacity: 1, rotate: 0,
-              }}
-              exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.12 } }}
-              transition={{ duration: 0.42, delay: i * 0.06, ease: [0.4, 0.0, 0.2, 1] }}
-              className="absolute pointer-events-none"
-              style={{ zIndex: 35 }}
-              aria-hidden
-            >
-              <CardFace card={c} />
-            </motion.div>
-          ));
+          const sourceY = 50 + Math.sin(angle) * ry * 100 + yOffset;
+          // Multi-card plays: cards arrive sequentially with a clear
+          // stagger AND fan out at the destination so two/three same-rank
+          // plays don't visually merge into a single card on the pile.
+          // Per-card horizontal offset spreads them ~28px apart in the
+          // viewport (translated to pixels via x/y in the animate{}).
+          const totalCards = playAnim.cards.length;
+          const fanStepPx = 28;
+          return playAnim.cards.map((c, i) => {
+            const fanOffset = (i - (totalCards - 1) / 2) * fanStepPx;
+            return (
+              <motion.div
+                key={`play-${playAnim.key}-${c.id}`}
+                initial={{
+                  left: `${sourceX}%`, top: `${sourceY}%`,
+                  x: '-50%', y: '-50%',
+                  scale: 0.6, opacity: 0, rotate: (i - totalCards / 2) * 5,
+                }}
+                animate={{
+                  left: '50%', top: '50%',
+                  x: `calc(-50% + ${fanOffset}px)`,
+                  y: '-50%',
+                  scale: 1, opacity: 1,
+                  rotate: (i - (totalCards - 1) / 2) * 6,
+                }}
+                exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.12 } }}
+                transition={{ duration: 0.42, delay: i * 0.16, ease: [0.4, 0.0, 0.2, 1] }}
+                className="absolute pointer-events-none"
+                style={{ zIndex: 35 + i }}
+                aria-hidden
+              >
+                <CardFace card={c} />
+              </motion.div>
+            );
+          });
         })()}
       </AnimatePresence>
 
@@ -959,7 +986,7 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
           const baseAngle = 90 + (slot / n) * 360;
           const angle = baseAngle * Math.PI / 180;
           const targetX = 50 + Math.cos(angle) * rx * 100;
-          const targetY = 50 + Math.sin(angle) * ry * 100;
+          const targetY = 50 + Math.sin(angle) * ry * 100 + yOffset;
           // Big pickups feel heavier: longer flight, slightly larger stagger,
           // and we show more card-backs (capped at 18 — past that they blur).
           const big = pickupAnim.count >= 10;
@@ -2008,38 +2035,35 @@ function registerPlayerPos(id: number, el: HTMLElement | null) {
   playerPosRefs.current[id] = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
 }
 
-/* Per-player draw event tracker. Watches every player's hand size + the
- * deck count. When any player's hand grows in the same tick that the
- * deck shrinks, we emit a draw event { playerId, count, key, ts } that
- * the overlay will animate. Auto-pruned after FLY_DURATION_MS + buffer. */
+/* Per-player draw event tracker. The earlier "hand grew" approach missed
+ * the common case: a player plays 1 card → reducer auto-refills 1 card in
+ * the same transition, so hand size goes 3 → 3 (different cards) and the
+ * size-delta is zero. We instead watch the DECK size and attribute any
+ * shrink to state.lastPlayerId (the player whose play triggered the
+ * refill). This works for human + AI seats uniformly and is robust to
+ * redacted card ids in network mode. Auto-pruned after FLY_DURATION_MS. */
 interface DrawEvent { key: number; playerId: number; count: number; }
 function useAllPlayerDraws(state: GameState | null): DrawEvent[] {
   const [events, setEvents] = useState<DrawEvent[]>([]);
-  const prev = useRef<{ handSizes: number[]; deck: number } | null>(null);
+  const prevDeck = useRef<number | null>(null);
   const counterRef = useRef(0);
   const timersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
   useEffect(() => {
-    if (!state) { prev.current = null; return; }
-    const handSizes = state.players.map(p => p.hand.length);
+    if (!state) { prevDeck.current = null; return; }
     const deck = state.deck.length;
-    const last = prev.current;
-    prev.current = { handSizes, deck };
-    if (!last) return;
-    if (deck >= last.deck) return; // deck grew or unchanged → not a draw
-    // For each player whose hand grew this tick, attribute the draw.
-    const fresh: DrawEvent[] = [];
-    handSizes.forEach((sz, i) => {
-      const grew = sz - (last.handSizes[i] ?? 0);
-      if (grew > 0) {
-        counterRef.current += 1;
-        fresh.push({ key: counterRef.current, playerId: i, count: Math.min(grew, 6) });
-      }
-    });
-    if (fresh.length === 0) return;
-    setEvents(es => [...es, ...fresh]);
+    const last = prevDeck.current;
+    prevDeck.current = deck;
+    if (last === null) return;
+    const drew = last - deck;
+    if (drew <= 0) return;                // deck grew or unchanged
+    const drewBy = state.lastPlayerId;
+    if (drewBy === null) return;          // initial deal / no recent actor
+    counterRef.current += 1;
+    const ev: DrawEvent = { key: counterRef.current, playerId: drewBy, count: Math.min(drew, 6) };
+    setEvents(es => [...es, ev]);
     const t = setTimeout(() => {
-      setEvents(es => es.filter(e => !fresh.some(f => f.key === e.key)));
+      setEvents(es => es.filter(e => e.key !== ev.key));
       timersRef.current.delete(t);
     }, FLY_DURATION_MS + 250);
     timersRef.current.add(t);
@@ -4116,7 +4140,11 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
     if (newCards.length === 0) return;
     playKeyRef.current += 1;
     setPlayAnim({ key: playKeyRef.current, actorId, cards: newCards });
-    const t = setTimeout(() => setPlayAnim(null), 700);
+    // Hold the animation long enough to cover the per-card stagger (160ms
+    // each) + travel (420ms). 4-card plays would otherwise tear off mid-
+    // flight. Cap at ~1.4s so a wild 5-card sequence still feels snappy.
+    const holdMs = Math.min(1400, 420 + 160 * Math.max(0, newCards.length - 1) + 200);
+    const t = setTimeout(() => setPlayAnim(null), holdMs);
     return () => clearTimeout(t);
   }, [state.pile, state.log, state.players, viewer, isSpectator]);
 
@@ -4244,7 +4272,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
             </motion.div>
           )}
         </AnimatePresence>
-        <div className="flex-1 p-3 sm:p-4 pt-14 flex flex-col gap-3 sm:gap-4 lg:gap-2 min-w-0 lg:min-h-0">
+        <div className="flex-1 p-3 sm:p-4 pt-14 flex flex-col gap-3 sm:gap-4 lg:gap-5 min-w-0 lg:min-h-0">
           <StatusBar state={state} viewerId={viewerId} isMyTurn={isMyTurn} spectatorCount={spectatorCount} />
           {/* Player tiles + center piles. Linear stack on small screens (turn-ordered);
               circular table layout on lg+ so the viewer can see who's next at a glance. */}
