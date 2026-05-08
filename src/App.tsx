@@ -612,7 +612,7 @@ function CompactCardRow({
 }
 
 function PlayerArea({ player, isCurrent, isViewer, isSpectatorFocus, onSpectatorFocus, compact, faceDownClickable, onFaceDownClick, emotes,
-  faceUpClickable, onFaceUpClick, selectedFaceUpIds, turnElapsedMs, recentlyActed, avatar }: {
+  faceUpClickable, onFaceUpClick, selectedFaceUpIds, turnElapsedMs, recentlyActed, avatar, connected = true }: {
   player: Player; isCurrent: boolean; isViewer: boolean; compact?: boolean;
   isSpectatorFocus?: boolean;                        // spectator has this player camera-focused
   onSpectatorFocus?: () => void;                     // click handler for spectators only
@@ -623,6 +623,7 @@ function PlayerArea({ player, isCurrent, isViewer, isSpectatorFocus, onSpectator
   turnElapsedMs?: number;
   recentlyActed?: boolean;            // 600ms pulse on whoever just played — table-wide readability.
   avatar?: string | null;             // avatar key for the small pip beside the name
+  connected?: boolean;                // network presence; false → render "away" indicator
 }) {
   const c = colorFor(player.id);
   // Register this tile's screen-centre so the deck-draw overlay can fly
@@ -655,7 +656,7 @@ function PlayerArea({ player, isCurrent, isViewer, isSpectatorFocus, onSpectator
           : isCurrent
             ? `${c.border} ${c.bg} ring-2 ${c.ring} active-player-glow`
             : 'border-gray-300 bg-white/85'
-      } ${recentlyActed ? 'player-acted-pulse' : ''} ${onSpectatorFocus ? 'cursor-pointer hover:ring-2 hover:ring-violet-300 transition-shadow' : ''} flex flex-col ${compact ? 'gap-0.5 sm:gap-1' : 'gap-2'} min-w-0 transition-transform duration-300 ${isCurrent && !isSpectatorFocus ? 'scale-[1.04]' : ''}`}>
+      } ${recentlyActed ? 'player-acted-pulse' : ''} ${onSpectatorFocus ? 'cursor-pointer hover:ring-2 hover:ring-violet-300 transition-shadow' : ''} flex flex-col ${compact ? 'gap-0.5 sm:gap-1' : 'gap-2'} min-w-0 transition-transform duration-300 ${isCurrent && !isSpectatorFocus ? 'scale-[1.04]' : ''} ${!connected && !player.isAi && !isViewer ? 'opacity-70 saturate-50' : ''}`}>
       {/* Turn-speed indicator: appears above the current player's tile after 15s of thinking,
           fills toward the 30s server-side auto-pickup cutoff. */}
       {isCurrent && typeof turnElapsedMs === 'number' && turnElapsedMs > 15000 && (
@@ -687,6 +688,26 @@ function PlayerArea({ player, isCurrent, isViewer, isSpectatorFocus, onSpectator
           <span className="truncate">{player.name}</span>
           {!compact && player.isAi && <span className="text-[10px] px-1 py-0.5 bg-gray-200 rounded shrink-0">AI</span>}
           {!compact && isViewer && <span className="text-[10px] text-emerald-700 shrink-0">(you)</span>}
+          {/* Away pip — surfaces "this player's app is suspended" so the
+              rest of the table knows why the game isn't progressing.
+              Hidden for AIs (always connected) and for the viewer (you
+              wouldn't render a tile of yourself as away in a meaningful
+              way). The active player gets a stronger amber treatment
+              since their disconnection is what's actually blocking play. */}
+          {!connected && !player.isAi && !isViewer && (
+            <span
+              className={`shrink-0 inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-bold tracking-wide ${
+                isCurrent
+                  ? 'bg-amber-100 text-amber-800 ring-1 ring-amber-400/60 animate-pulse'
+                  : 'bg-slate-100 text-slate-600'
+              }`}
+              title={`${player.name} is offline (app backgrounded)`}
+              aria-label="offline"
+            >
+              <span aria-hidden>💤</span>
+              <span>AWAY</span>
+            </span>
+          )}
         </span>
         <span className="flex items-center gap-1 whitespace-nowrap shrink-0">
           <HandStack count={player.hand.length} />
@@ -1411,7 +1432,7 @@ function ToastStack({ toasts }: { toasts: Toast[] }) {
  *   4. Restriction state — 7-lock / bonus / direction pips when active.
  * Plus the spectator-watching pip on the right when applicable.
  */
-function StatusBar({ state, viewerId, isMyTurn, spectatorCount }: { state: GameState; viewerId: number | null; isMyTurn: boolean; spectatorCount?: number }) {
+function StatusBar({ state, viewerId, isMyTurn, spectatorCount, connectedSeats }: { state: GameState; viewerId: number | null; isMyTurn: boolean; spectatorCount?: number; connectedSeats?: boolean[] }) {
   void viewerId;
   const p = state.players[state.current];
   const c = p ? colorFor(p.id) : null;
@@ -1449,9 +1470,19 @@ function StatusBar({ state, viewerId, isMyTurn, spectatorCount }: { state: GameS
         {c && <span className={`inline-block w-2 h-2 rounded-full ${c.dot} shrink-0`} />}
         <strong className="font-semibold truncate max-w-[140px] sm:max-w-[180px]">{p?.name}</strong>
         <span className="text-white/60">·</span>
-        {isMyTurn
-          ? <span className="text-emerald-300 font-semibold tracking-wide">your move</span>
-          : <span className="text-white/65">thinking</span>}
+        {(() => {
+          const currentConnected = p?.isAi || (connectedSeats?.[state.current] ?? true);
+          if (isMyTurn) return <span className="text-emerald-300 font-semibold tracking-wide">your move</span>;
+          if (!currentConnected) {
+            return (
+              <span className="flex items-center gap-1 text-amber-300 font-semibold tracking-wide">
+                <span aria-hidden>💤</span>
+                offline
+              </span>
+            );
+          }
+          return <span className="text-white/65">thinking</span>;
+        })()}
       </span>
 
       {/* Direction arrow — small, used to require a separate row. */}
@@ -4071,7 +4102,7 @@ function sortCards(cards: Card[]): Card[] {
   return cards.slice().sort((a, b) => RANK_VALUE[a.rank] - RANK_VALUE[b.rank] || a.suit.localeCompare(b.suit));
 }
 
-function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat, fromDeckIds, spectatorCount, avatars }: {
+function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat, fromDeckIds, spectatorCount, avatars, connectedSeats }: {
   state: GameState; dispatch: (a: Action) => void; viewerId: number | null;
   emotes?: { id: string; playerId: number; emoji: string }[]; onEmote?: (e: string) => void;
   chats?: ChatMsg[]; onChat?: (text: string) => void;
@@ -4079,6 +4110,10 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
   spectatorCount?: number;
   // avatars[i] = avatar key for state.players[i], or null/undefined for default.
   avatars?: (string | null)[];
+  // Per-seat connection presence — only meaningful in network mode.
+  // `undefined` (local mode) → assume everyone connected; `false` →
+  // surface an "away" indicator on that player's tile.
+  connectedSeats?: boolean[];
 }) {
   const isSpectator = viewerId === -1;
   // Spectators get to pick a "camera angle" — which player's hand they're
@@ -4369,7 +4404,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
           )}
         </AnimatePresence>
         <div className="flex-1 p-3 sm:p-4 pt-14 flex flex-col gap-3 sm:gap-4 lg:gap-5 min-w-0 lg:min-h-0">
-          <StatusBar state={state} viewerId={viewerId} isMyTurn={isMyTurn} spectatorCount={spectatorCount} />
+          <StatusBar state={state} viewerId={viewerId} isMyTurn={isMyTurn} spectatorCount={spectatorCount} connectedSeats={connectedSeats} />
           {/* Player tiles + center piles. Linear stack on small screens (turn-ordered);
               circular table layout on lg+ so the viewer can see who's next at a glance. */}
           {(() => {
@@ -4394,6 +4429,10 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
                   turnElapsedMs={pp.id === state.current ? turnElapsedMs : undefined}
                   recentlyActed={pp.id === lastActorId}
                   avatar={avatars?.[pp.id] ?? null}
+                  // Network presence — `undefined` in local mode means
+                  // assume connected. AI seats are always considered
+                  // connected (they're driven by the server, not a socket).
+                  connected={pp.isAi ? true : (connectedSeats?.[pp.id] ?? true)}
                 />
               );
             };
@@ -6197,6 +6236,9 @@ function NetworkGame({ onExit, prefilledCode, auth }: { onExit: () => void; pref
   // Pull avatars from the lobby per seat (online players supply their own
   // avatar on JOIN/CREATE; AIs get themed defaults assigned by the server).
   const netAvatars = conn.lobby?.players.map(p => p.avatar) ?? [];
+  // Per-seat connection state from the lobby — surfaces "away" pip on
+  // tiles when another player has backgrounded the app / dropped network.
+  const netConnectedSeats = conn.lobby?.players.map(p => p.connected) ?? undefined;
 
   // End-of-game sound: the loser hears the fahhhh sample; everyone else hears the win arpeggio.
   const endedRef = useRef(false);
@@ -6247,13 +6289,13 @@ function NetworkGame({ onExit, prefilledCode, auth }: { onExit: () => void; pref
     switch (conn.state.phase) {
       case 'swap': body = <SwapScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} />; break;
       case 'pass':
-      case 'play': body = <PlayScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} emotes={conn.lobby?.emotes} onEmote={onEmote} chats={conn.lobby?.chats} onChat={onChat} fromDeckIds={fromDeckIds} spectatorCount={conn.lobby?.spectatorCount} avatars={netAvatars} />; break;
+      case 'play': body = <PlayScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} emotes={conn.lobby?.emotes} onEmote={onEmote} chats={conn.lobby?.chats} onChat={onChat} fromDeckIds={fromDeckIds} spectatorCount={conn.lobby?.spectatorCount} avatars={netAvatars} connectedSeats={netConnectedSeats} />; break;
       case 'flipFaceDown': body = <FlipScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} />; break;
       // Same trick as local mode: keep PlayScreen alive under the reveal modal
       // so its log-watch effect fires the pile-pickup animation.
       case 'reveal': body = (
         <>
-          <PlayScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} emotes={conn.lobby?.emotes} onEmote={onEmote} chats={conn.lobby?.chats} onChat={onChat} fromDeckIds={fromDeckIds} spectatorCount={conn.lobby?.spectatorCount} avatars={netAvatars} />
+          <PlayScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} emotes={conn.lobby?.emotes} onEmote={onEmote} chats={conn.lobby?.chats} onChat={onChat} fromDeckIds={fromDeckIds} spectatorCount={conn.lobby?.spectatorCount} avatars={netAvatars} connectedSeats={netConnectedSeats} />
           <RevealChoiceScreen state={conn.state} dispatch={dispatch} viewerId={viewerId} />
         </>
       ); break;

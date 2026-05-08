@@ -183,9 +183,31 @@ export function useNetwork(active: boolean): NetworkConn {
     };
     connect();
 
+    // When the user returns to a backgrounded tab/PWA the OS may have
+    // suspended JS for long enough that the websocket is hung-but-not-
+    // closed (no `onclose` ever fires). Without this handler the UI
+    // looks "frozen" because we never trigger the reconnect path.
+    // On visibilitychange → visible, force-close the socket if it's
+    // not in OPEN state. The existing onclose retry handles the rest.
+    const onVisibility = () => {
+      if (document.visibilityState !== 'visible') return;
+      const ws = wsRef.current;
+      if (!ws) return;
+      if (ws.readyState !== WebSocket.OPEN) {
+        try { ws.close(); } catch { /* ignore */ }
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    // Browser-native online/offline events are a faster signal than the
+    // WS heartbeat. When the device flips from offline → online, trigger
+    // the same forced reconnect.
+    window.addEventListener('online', onVisibility);
+
     return () => {
       intentionalCloseRef.current = true;
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('online', onVisibility);
       try { wsRef.current?.close(); } catch { /* ignore */ }
     };
   }, [active]);
