@@ -570,11 +570,16 @@ export default class GameServer implements Party.Server {
         const room = this.rooms.get(ref.code); if (!room) return;
         if (ref.spectator) {
           room.spectators.delete(sender);
+        } else if (!room.state) {
+          // Lobby: free the seat entirely so a future JOIN doesn't
+          // duplicate the leaver. See node server.ts for full rationale.
+          this.removePlayerFromLobby(room, ref.id);
         } else {
           const player = room.players[ref.id];
           if (player) player.conn = null;
         }
         this.broadcast(room);
+        this.persist();
         return;
       }
 
@@ -593,14 +598,49 @@ export default class GameServer implements Party.Server {
       this.broadcast(room);
       return;
     }
+    if (!room.state) {
+      // Lobby: closed socket = freed seat. Otherwise the room
+      // accumulates ghost players that future JOINs duplicate.
+      this.removePlayerFromLobby(room, ref.id);
+      this.broadcast(room);
+      this.persist();
+      return;
+    }
     const player = room.players[ref.id];
     if (player) player.conn = null;
-    // If the game is in progress and no humans are connected anymore, start the abandon clock.
-    // The lazy sweep will end the room ~60s later if nobody returns.
-    if (room.state && !this.hasConnectedHuman(room) && !room.abandonedAt) {
+    if (!this.hasConnectedHuman(room) && !room.abandonedAt) {
       room.abandonedAt = Date.now();
     }
     this.broadcast(room);
     this.persist();
+  }
+
+  // Lobby-only: splice a player out and re-establish invariants
+  // (sequential ids, host promotion, room cleanup). Mirror of the
+  // node server's helper. Splicing a live game would scramble the
+  // reducer's player references — guarded with !room.state.
+  private removePlayerFromLobby(room: Room, id: number) {
+    if (room.state) return;
+    const wasHost = id === room.hostId;
+    room.players.splice(id, 1);
+    room.players.forEach((p, i) => { p.id = i; });
+    // Refresh ConnState.id on every still-attached connection in this
+    // room so subsequent messages map to the right (post-splice) seat.
+    for (const p of room.players) {
+      if (p.conn) {
+        const cs = p.conn.state as ConnState | null;
+        if (cs && cs.code === room.code && !cs.spectator) cs.id = p.id;
+      }
+    }
+    if (wasHost) {
+      room.hostId = room.players.length > 0 ? 0 : -1;
+    } else if (id < room.hostId) {
+      room.hostId -= 1;
+    }
+    if (room.players.length === 0) {
+      if (room.aiTimer) clearTimeout(room.aiTimer);
+      if (room.turnTimer) clearTimeout(room.turnTimer);
+      this.rooms.delete(room.code);
+    }
   }
 }

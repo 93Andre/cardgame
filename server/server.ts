@@ -627,12 +627,22 @@ wss.on('connection', ws => {
         if (!room) return;
         if (ref.spectator) {
           room.spectators.delete(ws);
+        } else if (!room.state) {
+          // Lobby phase: free the seat entirely so a future JOIN doesn't
+          // create a duplicate of the leaving player. Without this the
+          // player record stayed in room.players with ws=null, and a
+          // re-JOIN from the same client appended a NEW seat (visible as
+          // the user duplicating themselves).
+          removePlayerFromLobby(room, ref.id);
         } else {
+          // In-game: keep the slot intact so the player can RESUME via
+          // their session token if they reconnect.
           const player = room.players[ref.id];
           if (player) player.ws = null;
         }
         broadcast(room);
         socketToRoom.delete(ws);
+        persist();
         return;
       }
 
@@ -652,11 +662,58 @@ wss.on('connection', ws => {
       broadcast(room);
       return;
     }
+    if (!room.state) {
+      // Lobby phase: a closed socket while still in the lobby means the
+      // user navigated away / closed the tab. Free the seat so the room
+      // doesn't accumulate ghost slots that future JOINs would duplicate.
+      removePlayerFromLobby(room, ref.id);
+      socketToRoom.delete(ws);
+      broadcast(room);
+      persist();
+      return;
+    }
+    // In-game: just null the ws so a RESUME can pick the slot back up.
     const player = room.players[ref.id];
     if (player) player.ws = null;
-    if (room.state && !hasConnectedHuman(room) && !room.abandonedAt) {
+    if (!hasConnectedHuman(room) && !room.abandonedAt) {
       room.abandonedAt = Date.now();
     }
     broadcast(room);
   });
 });
+
+// Remove a player from a lobby-phase room. Splices the player array,
+// re-IDs remaining seats (id MUST match array index), updates host
+// promotion + socketToRoom indices, and deletes the room if it's now
+// empty. Only safe to call when room.state === null — splicing during
+// a live game would scramble the reducer's player references.
+function removePlayerFromLobby(room: Room, id: number) {
+  if (room.state) return;
+  const wasHost = id === room.hostId;
+  room.players.splice(id, 1);
+  // Re-index remaining players so id === array index again.
+  room.players.forEach((p, i) => { p.id = i; });
+  // Update socketToRoom for all sockets pointing at this room — their
+  // .id values may have shifted left if their slot came after the leaver.
+  for (const [sock, sref] of socketToRoom.entries()) {
+    if (sref.code !== room.code || sref.spectator) continue;
+    const owner = room.players.find(p => p.ws === sock);
+    if (owner) sref.id = owner.id;
+    else socketToRoom.delete(sock);
+  }
+  // Host promotion: if the leaver WAS the host, the next remaining
+  // player becomes host. If a player after the host left, hostId may
+  // need to shift down to keep pointing at the same person.
+  if (wasHost) {
+    room.hostId = room.players.length > 0 ? 0 : -1;
+  } else if (id < room.hostId) {
+    room.hostId -= 1;
+  }
+  // Empty room → drop it so its code can be reused and it doesn't show
+  // up in LIST_ROOMS as an empty husk.
+  if (room.players.length === 0) {
+    if (room.aiTimer) clearTimeout(room.aiTimer);
+    if (room.turnTimer) clearTimeout(room.turnTimer);
+    rooms.delete(room.code);
+  }
+}
