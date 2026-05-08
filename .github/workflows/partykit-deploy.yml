@@ -1,0 +1,58 @@
+name: Deploy PartyKit
+
+# Auto-deploy the websocket / Durable Object server (party/server.ts) to
+# PartyKit whenever main changes any file the production server depends on.
+# Mirrors how Vercel auto-deploys the client SPA — keeps the two halves of
+# the app from drifting out of sync.
+#
+# Setup (one-time): add a repo secret `PARTYKIT_LOGIN` with the contents of
+# ~/.partykit/sessions.json from the developer who deployed manually. Get it
+# with `cat ~/.partykit/sessions.json` after running `npx partykit login`.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'party/**'
+      - 'src/shared/**'           # game.ts is imported by the server
+      - 'partykit.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/partykit-deploy.yml'
+  # Lets us re-run the workflow from the GitHub UI without a code change.
+  workflow_dispatch:
+
+concurrency:
+  group: partykit-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Restore PartyKit credentials
+        # Workflow runners don't have ~/.partykit; the secret puts a session
+        # file there so the CLI authenticates non-interactively.
+        env:
+          PARTYKIT_LOGIN: ${{ secrets.PARTYKIT_LOGIN }}
+        run: |
+          if [ -z "$PARTYKIT_LOGIN" ]; then
+            echo "::error::PARTYKIT_LOGIN secret is not set. Run \`npx partykit login\` locally and copy ~/.partykit/sessions.json into the secret."
+            exit 1
+          fi
+          mkdir -p "$HOME/.partykit"
+          printf '%s' "$PARTYKIT_LOGIN" > "$HOME/.partykit/sessions.json"
+
+      - name: Deploy
+        run: npx partykit deploy
