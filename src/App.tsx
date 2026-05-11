@@ -1767,19 +1767,39 @@ function IntroSequence({
   // side seats outside the visible area. We measure once on mount and on
   // resize, then derive RX/RY from the smaller dimension. Falls back to
   // the desktop sizing during SSR / first paint.
-  const [vw, setVW] = useState(() => (typeof window === 'undefined' ? 1024 : window.innerWidth));
-  const [vh, setVH] = useState(() => (typeof window === 'undefined' ? 768 : window.innerHeight));
+  // Viewport tracking. We prefer visualViewport — it excludes the iOS
+  // dynamic toolbar / URL bar, so `top: 50%` of a flex-centred container
+  // lands at the TRUE visible centre rather than the layout-viewport
+  // centre that includes the area behind the browser chrome. Fall back
+  // to innerWidth/innerHeight for browsers without visualViewport.
+  const readVV = () => {
+    if (typeof window === 'undefined') return { w: 1024, h: 768 };
+    const vv = window.visualViewport;
+    return { w: vv?.width ?? window.innerWidth, h: vv?.height ?? window.innerHeight };
+  };
+  const [vw, setVW] = useState(() => readVV().w);
+  const [vh, setVH] = useState(() => readVV().h);
   useEffect(() => {
-    const update = () => { setVW(window.innerWidth); setVH(window.innerHeight); };
+    const update = () => { const { w, h } = readVV(); setVW(w); setVH(h); };
     window.addEventListener('resize', update);
-    return () => window.removeEventListener('resize', update);
+    window.visualViewport?.addEventListener('resize', update);
+    window.visualViewport?.addEventListener('scroll', update);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.visualViewport?.removeEventListener('resize', update);
+      window.visualViewport?.removeEventListener('scroll', update);
+    };
   }, []);
-  // Stage targets up to 760×540 on desktop, but shrinks proportionally so
-  // 2*RX + chip width fits the viewport with margin to spare.
-  const stageW = Math.min(760, vw - 32);
-  const stageH = Math.min(540, vh * 0.70);
-  const RX = Math.max(110, stageW / 2 - 80);    // 80px margin per side reserves room for chips
-  const RY = Math.max(70,  stageH / 2 - 70);
+  // Stage size — generous reserves on every side. Width caps lower (680)
+  // and height caps lower (440) on desktop so the table never crowds the
+  // viewport edges. Chip margin bumps to 100px / 90px so the seat chips
+  // land safely INSIDE the brown rim (which extends 16px past the stage
+  // via the `.table-stage::before` pseudo). Result: chips sit on the felt,
+  // not on the wood, regardless of viewport size.
+  const stageW = Math.min(680, vw - 48);
+  const stageH = Math.min(440, vh - 120);       // 120px reserve total (top + bottom)
+  const RX = Math.max(120, stageW / 2 - 100);
+  const RY = Math.max(80,  stageH / 2 - 90);
   const positions = useMemo(() => {
     return players.map((p, i) => {
       // Start at bottom, distribute clockwise. Add tiny offsets so 2-player
@@ -1873,7 +1893,11 @@ function IntroSequence({
     <motion.div
       initial={{ opacity: 0 }} animate={{ opacity: skipped ? 0 : 1 }} exit={{ opacity: 0 }}
       transition={{ duration: 0.25 }}
-      className="fixed inset-0 z-40 cursor-pointer overflow-hidden"
+      // Flex-centred container: more robust than the previous absolute
+      // + translate approach. The stage is a direct flex child and is
+      // centred along both axes regardless of mobile address bars,
+      // sidebar toggles, or ancestor transforms (framer-motion safe).
+      className="fixed inset-0 z-40 cursor-pointer overflow-hidden flex items-center justify-center"
       style={{
         background: [
           'radial-gradient(ellipse 90% 70% at 50% 48%, rgba(39,91,67,0.58), rgba(8,20,14,0.82) 68%, rgba(0,0,0,0.90))',
@@ -1925,18 +1949,15 @@ function IntroSequence({
         );
       })()}
 
-      {/* Stage — all elliptical layout coordinates are relative to the centre of this box.
-          Width/height are derived from the viewport so chips/cards never escape it. */}
+      {/* Stage — all elliptical layout coordinates are relative to the
+          centre of this box. Sized from visualViewport so the table fits
+          comfortably even with mobile chrome / browser toolbars. Flex
+          centring on the parent positions us; we don't self-position. */}
       <div
-        className="table-stage relative"
+        className="table-stage relative shrink-0"
         style={{
-          position: 'absolute',
-          left: '50%',
-          top: '50%',
           width: stageW,
           height: stageH,
-          transform: 'translate(-50%, -50%)',
-          transformOrigin: 'center center',
         }}
       >
         {/* Player chips — pop in around the table in order */}
