@@ -17,6 +17,43 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <link rel="apple-touch-icon" href="/icon.svg" />
 
+    <!-- First-paint splash. The JS bundle is ~670KB so on a cold cache
+         there's ~400ms of "blank white screen" before React mounts.
+         Inline CSS paints the felt + wordmark immediately so the user
+         sees something on-brand from frame 0. App's <div id="root">
+         renders on top and the splash sits behind it — when React
+         mounts, the splash is naturally covered. The wordmark fades
+         out via opacity-driven CSS to avoid a hard "pop" when the
+         actual UI lands. -->
+    <style>
+      :root {
+        background: radial-gradient(ellipse 100% 100% at 50% 50%, #4f8a6c 0%, #2c5d44 50%, #1c4030 100%);
+      }
+      html, body { background: #2c5d44; }
+      .ph-splash {
+        position: fixed; inset: 0;
+        display: flex; align-items: center; justify-content: center;
+        background: radial-gradient(ellipse 100% 100% at 50% 50%, #4f8a6c 0%, #2c5d44 50%, #1c4030 100%);
+        color: #fff;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        z-index: 0;
+        pointer-events: none;
+      }
+      .ph-splash .wm {
+        font-size: clamp(2rem, 6vw, 3.75rem);
+        font-weight: 900;
+        letter-spacing: 0.22em;
+        text-shadow: 0 4px 24px rgba(16,185,129,0.35);
+        opacity: 0;
+        animation: ph-fade-in 0.45s ease-out 0.05s forwards, ph-fade-out 0.4s ease-in 1.6s forwards;
+      }
+      @keyframes ph-fade-in  { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+      @keyframes ph-fade-out { to   { opacity: 0; } }
+      /* Once the SPA mounts, #root has content and pushes the splash out of
+         the layout flow via z-index. JS does the heavy lift — this just
+         ensures we never see white. */
+    </style>
+
     <!-- Google Analytics (gtag.js, GA4). Loaded async so it doesn't block
          render. The SPA never changes URL (everything is on "/"), so the
          default page_view only fires once on load — App.tsx fires manual
@@ -30,6 +67,7 @@
     </script>
   </head>
   <body>
+    <div class="ph-splash" aria-hidden="true"><div class="wm">LATRINE</div></div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

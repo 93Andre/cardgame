@@ -330,16 +330,18 @@ interface CardFaceProps {
 }
 
 // Power cards carry game-changing rules (burn / reset / skip / reverse / lock
-// / wild). A subtle bottom accent stripe + corner ⚡ pip lets players scan
+// / wild). A subtle bottom accent stripe + corner glyph lets players scan
 // their hand and read "this card matters" without having to remember every
-// rule. Tinted to match the toast tone for that effect.
-const POWER_CARD_ACCENTS: Partial<Record<Rank, { bar: string; tip: string }>> = {
-  '10': { bar: 'bg-rose-500',    tip: 'Burns pile' },
-  '2':  { bar: 'bg-sky-500',     tip: 'Resets pile' },
-  '8':  { bar: 'bg-amber-500',   tip: 'Skips next' },
-  'K':  { bar: 'bg-violet-500',  tip: 'Reverses' },
-  '7':  { bar: 'bg-pink-500',    tip: '7-or-lower lock' },
-  'JK': { bar: 'bg-fuchsia-500', tip: 'Wild' },
+// rule. Each rank has its own glyph so the effect is identifiable at a
+// glance — e.g. 2 = reset wave, 7 = lock, 8 = skip arrow, 10 = flame, K =
+// reverse arrows, JK = prism.
+const POWER_CARD_ACCENTS: Partial<Record<Rank, { bar: string; tip: string; glyph: string; tint: string }>> = {
+  '10': { bar: 'bg-rose-500',    tip: 'Burns pile',        glyph: '🔥', tint: 'rgba(244,63,94,0.10)' },
+  '2':  { bar: 'bg-sky-500',     tip: 'Resets pile',       glyph: '↻',  tint: 'rgba(56,189,248,0.10)' },
+  '8':  { bar: 'bg-amber-500',   tip: 'Skips next',        glyph: '⤳',  tint: 'rgba(245,158,11,0.10)' },
+  'K':  { bar: 'bg-violet-500',  tip: 'Reverses',          glyph: '↺',  tint: 'rgba(167,139,250,0.10)' },
+  '7':  { bar: 'bg-pink-500',    tip: '7-or-lower lock',   glyph: '🔒', tint: 'rgba(244,114,182,0.10)' },
+  'JK': { bar: 'bg-fuchsia-500', tip: 'Wild',              glyph: '✦',  tint: 'rgba(232,121,249,0.12)' },
 };
 
 function CardFace({ card, size, small, hidden, selected, onClick, onDoubleClick, dim, jokerEffRank, magnifyOnHover, cuttable, chainable }: CardFaceProps) {
@@ -408,8 +410,16 @@ function CardFace({ card, size, small, hidden, selected, onClick, onDoubleClick,
     );
   }
   const isJoker = card.rank === 'JK';
-  const red = RED_SUITS.includes(card.suit);
-  const colorCls = isJoker ? 'text-purple-700' : red ? 'text-red-600' : 'text-gray-900';
+  // Suit-tinted colour: hearts use the warmer red-600 (orange-leaning),
+  // diamonds the cooler rose-600 (pink-leaning), so the two reds don't
+  // blend at a glance. Spades stay neutral grey-900; clubs slightly
+  // cooler slate-900 for the same reason.
+  const colorStyle: React.CSSProperties = isJoker
+    ? { color: '#7e22ce' }                                // joker purple
+    : card.suit === '♥' ? { color: '#dc2626' }            // hearts: red
+    : card.suit === '♦' ? { color: '#e11d48' }            // diamonds: rose
+    : card.suit === '♠' ? { color: '#0f172a' }            // spades: slate-900
+    :                     { color: '#1e293b' };           // clubs: slate-800
   const bg = isJoker ? 'bg-amber-50' : 'bg-white';
   const accent = POWER_CARD_ACCENTS[card.rank];
   // Bar is thinner on tiny/small cards so it doesn't eat the rank glyph.
@@ -418,8 +428,9 @@ function CardFace({ card, size, small, hidden, selected, onClick, onDoubleClick,
     <div
       onClick={onClick}
       onDoubleClick={onDoubleClick}
-      className={`${base} ${bg} ${colorCls} border-gray-300 ${onClick ? 'cursor-pointer hover:shadow-md' : ''} ${selected ? '-translate-y-3 ring-2 ring-amber-500' : ''} ${dim ? 'opacity-50' : ''} overflow-hidden`}
+      className={`${base} ${bg} border-gray-300 ${onClick ? 'cursor-pointer hover:shadow-md' : ''} ${selected ? '-translate-y-3 ring-2 ring-amber-500' : ''} ${dim ? 'opacity-50' : ''} overflow-hidden`}
       title={accent?.tip}
+      style={colorStyle}
     >
       <div className="absolute top-0.5 left-0.5 leading-none font-bold">{isJoker ? 'J' : card.rank}</div>
       <div className={resolvedSize === 'tiny' ? 'text-sm' : resolvedSize === 'small' ? 'text-lg' : 'text-2xl'}>{isJoker ? '★' : card.suit}</div>
@@ -432,10 +443,11 @@ function CardFace({ card, size, small, hidden, selected, onClick, onDoubleClick,
           {/* Bottom accent bar — tinted by power-effect, sits flush with the
               card's bottom edge inside the rounded clip. */}
           <div className={`absolute bottom-0 inset-x-0 ${barH} ${accent.bar}`} aria-hidden />
-          {/* Tiny ⚡ pip in the upper-right so the power status is also
-              visible at a glance even when the card is partly occluded. */}
+          {/* Per-rank glyph in the upper-right — distinct identity per power
+              card (🔥 burn, ↻ reset, ⤳ skip, ↺ reverse, 🔒 lock, ✦ wild)
+              instead of the generic ⚡ pip. Sized down on tiny cards. */}
           {resolvedSize !== 'tiny' && (
-            <div className="absolute top-0.5 right-0.5 text-[10px] leading-none opacity-70" aria-hidden>⚡</div>
+            <div className="absolute top-0.5 right-0.5 text-[10px] leading-none opacity-85" aria-hidden>{accent.glyph}</div>
           )}
         </>
       )}
@@ -657,6 +669,21 @@ function PlayerArea({ player, isCurrent, isViewer, isSpectatorFocus, onSpectator
             ? `${c.border} ${c.bg} ring-2 ${c.ring} active-player-glow`
             : 'border-gray-300 bg-white/85'
       } ${recentlyActed ? 'player-acted-pulse' : ''} ${onSpectatorFocus ? 'cursor-pointer hover:ring-2 hover:ring-violet-300 transition-shadow' : ''} flex flex-col ${compact ? 'gap-0.5 sm:gap-1' : 'gap-2'} min-w-0 transition-transform duration-300 ${isCurrent && !isSpectatorFocus ? 'scale-[1.04]' : ''} ${!connected && !player.isAi && !isViewer ? 'opacity-70 saturate-50' : ''}`}>
+      {/* Active-player spotlight — a soft amber radial gradient pouring
+          down from above the tile, like a stage light. Layered behind
+          the tile content (pointer-events-none + z-0). Only renders for
+          the active player and not when the spectator is camera-focused
+          on someone else (the violet spectator treatment owns that). */}
+      {isCurrent && !isSpectatorFocus && (
+        <div
+          className="absolute inset-x-[-12px] -top-8 h-12 pointer-events-none rounded-full"
+          style={{
+            background: 'radial-gradient(ellipse at 50% 100%, rgba(251,191,36,0.30) 0%, transparent 65%)',
+            filter: 'blur(3px)',
+          }}
+          aria-hidden
+        />
+      )}
       {/* Turn-speed indicator: appears above the current player's tile after 15s of thinking,
           fills toward the 30s server-side auto-pickup cutoff. */}
       {isCurrent && typeof turnElapsedMs === 'number' && turnElapsedMs > 15000 && (
@@ -711,6 +738,19 @@ function PlayerArea({ player, isCurrent, isViewer, isSpectatorFocus, onSpectator
         </span>
         <span className="flex items-center gap-1 whitespace-nowrap shrink-0">
           <HandStack count={player.hand.length} />
+          {/* Last-card warning — only fires once a player is genuinely
+              about to win (hand + face-up + face-down combined = 1). The
+              most dramatic moment in the game; the tile celebrates it.
+              Hidden once they've actually gone out (finishPos set). */}
+          {!player.out && (player.hand.length + player.faceUp.length + player.faceDown.length === 1) && (
+            <span
+              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-black tracking-wider bg-rose-500 text-white ring-1 ring-rose-300/60 shadow-[0_2px_6px_rgba(244,63,94,0.55)] animate-pulse"
+              title={`${player.name} has 1 card left!`}
+            >
+              <span aria-hidden>🔥</span>
+              <span>1 LEFT</span>
+            </span>
+          )}
           {player.out && player.finishPos !== null && <RankMedal pos={player.finishPos} />}
         </span>
       </div>
@@ -861,6 +901,27 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
       className={`relative w-full mx-auto ${layout === 'desktop' ? 'flex-1' : ''}`}
       style={{ aspectRatio, maxWidth: 1100, minHeight, maxHeight }}
     >
+      {/* Felt centre monogram — a quiet "LATRINE" wordmark embroidered into
+          the felt, visible behind the centre piles. Sits at z-0 with low
+          opacity so the pile cards always read on top; just adds a premium
+          "this is a real table" touch when the eye lingers on the centre. */}
+      <div
+        aria-hidden
+        className="absolute left-1/2 -translate-x-1/2 pointer-events-none select-none"
+        style={{
+          top: `${50 + yOffset}%`,
+          transform: 'translate(-50%, -50%)',
+          color: 'rgba(255,255,255,0.06)',
+          fontWeight: 900,
+          fontSize: 'clamp(1.5rem, 4vw, 2.6rem)',
+          letterSpacing: '0.32em',
+          textShadow: '0 1px 0 rgba(0,0,0,0.20), 0 0 18px rgba(16,185,129,0.18)',
+          whiteSpace: 'nowrap',
+          zIndex: 0,
+        }}
+      >
+        LATRINE
+      </div>
       {/* Direction-of-play track: a glowing neon comet orbiting the ellipse.
           Three layered SVG strokes:
             • base ring — faint full outline so the path is always readable
@@ -880,8 +941,14 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
         className="absolute inset-0 w-full h-full pointer-events-none overflow-visible"
       >
         <defs>
-          <filter id="flow-comet-glow" x="-30%" y="-30%" width="160%" height="160%">
-            <feGaussianBlur stdDeviation="1.4" />
+          <filter id="flow-comet-glow" x="-40%" y="-40%" width="180%" height="180%">
+            {/* Stronger Gaussian blur + a chromatic split via a colour-
+                matrix-tinted second blur, layered, so the trail reads as
+                a real glowing comet rather than a dashed line. */}
+            <feGaussianBlur stdDeviation="2.2" />
+          </filter>
+          <filter id="flow-comet-core" x="-30%" y="-30%" width="160%" height="160%">
+            <feGaussianBlur stdDeviation="0.6" />
           </filter>
         </defs>
         {/* Faint full-perimeter track. */}
@@ -912,9 +979,26 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
           stroke="rgb(220,252,231)" strokeWidth="2.2"
           strokeDasharray="10 90" strokeLinecap="round"
           vectorEffect="non-scaling-stroke"
+          filter="url(#flow-comet-core)"
           style={{
             animation: `flow-comet-${direction === 1 ? 'cw' : 'ccw'} 3.2s linear infinite`,
-            filter: 'drop-shadow(0 0 4px rgba(220,252,231,0.9))',
+            filter: 'drop-shadow(0 0 6px rgba(220,252,231,1)) drop-shadow(0 0 14px rgba(16,185,129,0.6))',
+          }}
+        />
+        {/* Sparkle tip — short, brighter dash at the leading edge of the
+            core, slightly ahead of it, so the comet has a discernible head
+            instead of a uniform dash. */}
+        <ellipse
+          cx="50" cy="50" rx={rx * 100} ry={ry * 100}
+          pathLength={100}
+          fill="none"
+          stroke="white" strokeWidth="1.4"
+          strokeDasharray="2 98" strokeLinecap="round"
+          vectorEffect="non-scaling-stroke"
+          style={{
+            animation: `flow-comet-${direction === 1 ? 'cw' : 'ccw'} 3.2s linear infinite`,
+            animationDelay: '0.12s',
+            filter: 'drop-shadow(0 0 4px white) drop-shadow(0 0 10px rgba(255,255,255,0.7))',
           }}
         />
       </svg>
@@ -988,10 +1072,21 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
                 exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.12 } }}
                 transition={{ duration: 0.42, delay: i * 0.16, ease: [0.4, 0.0, 0.2, 1] }}
                 className="absolute pointer-events-none"
-                style={{ zIndex: 35 + i }}
+                style={{ zIndex: 35 + i, perspective: '600px' }}
                 aria-hidden
               >
-                <CardFace card={c} />
+                {/* Mid-flight Y-axis flip: a 3D rotate from 180→0 over the
+                    flight duration so the card visually flips from back to
+                    face as it lands. Inner div carries the flip so the
+                    outer motion.div retains its translation animation. */}
+                <motion.div
+                  initial={{ rotateY: 180 }}
+                  animate={{ rotateY: 0 }}
+                  transition={{ duration: 0.42, delay: i * 0.16, ease: [0.4, 0.0, 0.2, 1] }}
+                  style={{ transformStyle: 'preserve-3d' }}
+                >
+                  <CardFace card={c} />
+                </motion.div>
               </motion.div>
             );
           });
@@ -1048,6 +1143,38 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
             );
           });
         })()}
+        {/* "+N cards" floating burst on the picker's tile — gives the
+            pile-pickup moment a clear "you got this many" hit. Rose-
+            tinted because pickup is the bad outcome. Animates up + out
+            over ~1.1s. Sized to the count so big pickups feel HEAVY. */}
+        {pickupAnim && (() => {
+          const slot = (pickupAnim.pickerId - safeViewer + n) % n;
+          const baseAngle = 90 + (slot / n) * 360;
+          const angle = baseAngle * Math.PI / 180;
+          const targetX = 50 + Math.cos(angle) * rx * 100;
+          const targetY = 50 + Math.sin(angle) * ry * 100 + yOffset;
+          const bigBoost = pickupAnim.count >= 10 ? 1.18 : 1;
+          return (
+            <motion.div
+              key={`pickup-burst-${pickupAnim.key}`}
+              initial={{ opacity: 0, scale: 0.5, y: 8 }}
+              animate={{ opacity: [0, 1, 1, 0], scale: [0.5, bigBoost * 1.15, bigBoost, bigBoost * 0.95], y: [8, -6, -10, -22] }}
+              transition={{ duration: 1.1, times: [0, 0.2, 0.7, 1], ease: 'easeOut' }}
+              className="absolute pointer-events-none font-black text-rose-200 drop-shadow-[0_3px_8px_rgba(244,63,94,0.55)]"
+              style={{
+                left: `${targetX}%`,
+                top: `${targetY}%`,
+                transform: 'translate(-50%, -50%)',
+                fontSize: pickupAnim.count >= 10 ? '1.8rem' : '1.4rem',
+                letterSpacing: '0.02em',
+                zIndex: 40,
+              }}
+              aria-hidden
+            >
+              +{pickupAnim.count}
+            </motion.div>
+          );
+        })()}
       </AnimatePresence>
     </div>
   );
@@ -1065,14 +1192,30 @@ function CardStack({ count, top, layerCards, emptyLabel, tone = 'normal' }: {
   const MAX_LAYERS = 12;
   const visibleLayers = Math.min(count, MAX_LAYERS);
   const baseLayers = Math.max(0, visibleLayers - 1);
-  const layerStep = 1.6;
+  // The PLAY pile (layerCards provided) reads as a messy, growing stack
+  // — bigger per-layer offset + jittered rotation make it look like real
+  // cards have been thrown on. The DECK / BURN pile (no layerCards, just
+  // a count of card-back placeholders) keeps the original tight stacking
+  // so it reads as a neat draw deck.
+  const isPlayStack = !!layerCards;
+  const layerStep = isPlayStack ? 2.4 : 1.6;
   const padPx = baseLayers * layerStep;
+  // Deterministic "thrown" rotation per card so the stack doesn't re-jitter
+  // on every render. Seeded off the card id when available.
+  const rotationFor = (entry: PileEntry | undefined, fallbackKey: number) => {
+    if (!isPlayStack) return 0;
+    const seed = entry?.card.id ?? `f-${fallbackKey}`;
+    let h = 0;
+    for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) | 0;
+    // Map hash to ±5° range
+    return ((h % 1001) / 1000 - 0.5) * 10;
+  };
   return (
     <div
       className="relative"
       style={{
-        width: `calc(4rem + ${padPx}px)`,
-        height: `calc(6rem + ${padPx}px)`,
+        width: `calc(4rem + ${padPx + (isPlayStack ? 18 : 0)}px)`,
+        height: `calc(6rem + ${padPx + (isPlayStack ? 8 : 0)}px)`,
       }}
     >
       {Array.from({ length: baseLayers }).map((_, i) => {
@@ -1082,12 +1225,19 @@ function CardStack({ count, top, layerCards, emptyLabel, tone = 'normal' }: {
         const fallbackCls = tone === 'burned'
           ? 'border-rose-600/60 bg-rose-500'
           : 'border-indigo-800/60 bg-indigo-700';
+        const rotate = rotationFor(layerCardEntry, depth);
         return (
           <div
             key={i}
             aria-hidden
             className="absolute"
-            style={{ top: offset, left: offset, filter: `brightness(${1 - depth * 0.05})` }}
+            style={{
+              top: offset,
+              left: offset,
+              transform: rotate ? `rotate(${rotate}deg)` : undefined,
+              transformOrigin: 'center center',
+              filter: `brightness(${1 - depth * 0.04})`,
+            }}
           >
             {layerCardEntry
               ? <CardFace card={layerCardEntry.card} jokerEffRank={layerCardEntry.effRank} magnifyOnHover />
@@ -1096,7 +1246,10 @@ function CardStack({ count, top, layerCards, emptyLabel, tone = 'normal' }: {
           </div>
         );
       })}
-      <div className="absolute top-0 left-0">
+      <div
+        className="absolute top-0 left-0"
+        style={isPlayStack && count > 0 ? { transform: `rotate(${rotationFor(undefined, count)}deg)`, transformOrigin: 'center center' } : undefined}
+      >
         {count > 0
           ? (top ?? <CardFace hidden />)
           : <div className="w-12 h-[68px] sm:w-16 sm:h-24 rounded-md border-2 border-dashed border-gray-400 flex items-center justify-center text-[10px] text-gray-400">{emptyLabel ?? 'empty'}</div>}
@@ -1991,7 +2144,18 @@ function RevealOverlay({ playerName, card }: { playerName: string; card: Card })
           <div className="font-semibold">{playerName} picked up the pile</div>
           <div className="text-xs text-stone-300">Revealed card:</div>
         </div>
-        <div className="scale-90"><CardFace card={card} /></div>
+        {/* 3D flip-on-reveal — the card appears face-down then flips to
+            its face over 500ms, mimicking the picker turning it over. */}
+        <div className="scale-90" style={{ perspective: '600px' }}>
+          <motion.div
+            initial={{ rotateY: 180 }}
+            animate={{ rotateY: 0 }}
+            transition={{ duration: 0.55, delay: 0.18, ease: [0.4, 0.0, 0.2, 1] }}
+            style={{ transformStyle: 'preserve-3d' }}
+          >
+            <CardFace card={card} />
+          </motion.div>
+        </div>
       </div>
     </motion.div>
   );
@@ -2438,13 +2602,21 @@ function Avatar({ avatar, name, size = 'md' }: { avatar?: string | null; name?: 
     size === 'md' ? 'w-10 h-10 text-xl' :
                     'w-7 h-7 text-base';
   const def = avatarDef(avatar);
+  // Subtle idle "breathe" on the inner emoji/glyph — 0.96 ↔ 1.04 over 3.4s.
+  // Adds life to the table during quiet moments without competing with the
+  // active-player spotlight. Reduced-motion users get a static avatar.
   if (def) {
     return (
       <div
         className={`${dims} rounded-full bg-gradient-to-br ${def.gradient} flex items-center justify-center shrink-0 shadow-inner ring-1 ring-white/30`}
         aria-label={`avatar: ${def.key}`}
       >
-        <span aria-hidden>{def.emoji}</span>
+        <motion.span
+          aria-hidden
+          animate={{ scale: [1, 1.04, 0.97, 1] }}
+          transition={{ duration: 3.4, repeat: Infinity, ease: 'easeInOut' }}
+          className="leading-none"
+        >{def.emoji}</motion.span>
       </div>
     );
   }
@@ -2453,7 +2625,12 @@ function Avatar({ avatar, name, size = 'md' }: { avatar?: string | null; name?: 
       className={`${dims} rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 text-white font-black flex items-center justify-center shrink-0 shadow-inner ring-1 ring-white/30`}
       aria-label="avatar"
     >
-      {(name ?? '?').slice(0, 1).toUpperCase()}
+      <motion.span
+        aria-hidden
+        animate={{ scale: [1, 1.04, 0.97, 1] }}
+        transition={{ duration: 3.4, repeat: Infinity, ease: 'easeInOut' }}
+        className="leading-none"
+      >{(name ?? '?').slice(0, 1).toUpperCase()}</motion.span>
     </div>
   );
 }
@@ -4574,7 +4751,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
               // stays balanced even when the split is uneven by one card.
               const overlapForRow = (rowLen: number) =>
                 rowLen > 9 ? Math.min(36, (rowLen - 9) * 3.5) : 0;
-              const renderCard = (c: typeof displayCards[number], i: number, rowOverlap: number, baseIndex: number) => {
+              const renderCard = (c: typeof displayCards[number], i: number, rowOverlap: number, baseIndex: number, rowLen: number) => {
                 const wouldBeOk = isMyTurn ? canPlayCards([c], state.pile, state.sevenRestriction) : true;
                 const isCutMatch = canCut && myCutMatches.some(m => m.id === c.id);
                 const isChainMatch = isCutMatch && isChainOpportunity;
@@ -4593,11 +4770,22 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
                 const onDoubleClick = canFastPlay
                   ? () => dispatch({ type: 'PLAY_CARDS', ids: [c.id] })
                   : undefined;
+                // Hand fan: ±1.2° per slot around the row centre. Reads as
+                // a real handful instead of a perfectly aligned row. Tiny
+                // angle so legibility isn't impacted; the negative-margin
+                // overlap still controls horizontal density.
+                const fanCentreOffset = i - (rowLen - 1) / 2;
+                const fanRot = fanCentreOffset * 1.2;
                 return (
                   <div
                     key={c.id}
                     className="shrink-0 relative hover:z-20"
-                    style={{ marginLeft: i === 0 ? 0 : -rowOverlap, zIndex: baseIndex + i }}
+                    style={{
+                      marginLeft: i === 0 ? 0 : -rowOverlap,
+                      zIndex: baseIndex + i,
+                      transform: `rotate(${fanRot}deg)`,
+                      transformOrigin: '50% 100%',
+                    }}
                   >
                     <AnimatedCard
                       layoutId={c.id} card={c}
@@ -4643,7 +4831,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
                           // card is unreachable / visually clipped.
                           style={{ justifyContent: 'safe center' }}
                         >
-                          {row.map((c, i) => renderCard(c, i, rowOverlap, baseIndex))}
+                          {row.map((c, i) => renderCard(c, i, rowOverlap, baseIndex, row.length))}
                         </div>
                       );
                     })}
@@ -5367,12 +5555,35 @@ function EndScreen({ state, onPlayAgain, canPlayAgain = true, awaitingHost = fal
         className="text-3xl sm:text-5xl font-black text-center px-4 z-10"
       >💩 {loser?.name} is the Poop Head!</motion.h1>
 
+      {/* POOP HEAD rubber-stamp — slams down 600ms after the title with a
+          rotated bounce + rose ring, sized so it reads as a "stamp" rather
+          than a label. Decorative; aria-hidden. */}
+      <motion.div
+        initial={{ scale: 4, opacity: 0, rotate: -22 }}
+        animate={{ scale: 1, opacity: 1, rotate: -8 }}
+        transition={{ delay: 0.55, type: 'spring', stiffness: 280, damping: 14 }}
+        className="z-10"
+        aria-hidden
+      >
+        <div className="px-4 py-1.5 rounded-md border-[3px] border-rose-600 text-rose-700 font-black tracking-[0.18em] text-base sm:text-xl bg-white/10 shadow-[0_6px_24px_rgba(244,63,94,0.45)]">
+          💩 POOP HEAD
+        </div>
+      </motion.div>
+
       <ol className="bg-white/90 p-4 rounded-lg border border-gray-300 z-10 min-w-[260px] space-y-1.5">
         {order.map(p => (
           <li key={p.id} className="flex items-center gap-2">
             <RankMedal pos={p.finishPos!} />
             <span className={`inline-block w-2 h-2 rounded-full ${colorFor(p.id).dot}`} />
-            <span>{p.name}</span>
+            <span className={p.finishPos === 1 ? 'font-bold' : ''}>{p.name}</span>
+            {p.finishPos === 1 && (
+              <motion.span
+                aria-hidden
+                animate={{ y: [0, -3, 0] }}
+                transition={{ duration: 1.8, repeat: Infinity, ease: 'easeInOut' }}
+                className="text-lg leading-none drop-shadow-[0_2px_4px_rgba(251,191,36,0.55)]"
+              >👑</motion.span>
+            )}
           </li>
         ))}
         <li className="text-rose-700 font-semibold flex items-center gap-2">
