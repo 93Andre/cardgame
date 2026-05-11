@@ -1231,10 +1231,16 @@ function CardStack({ count, top, layerCards, emptyLabel, tone = 'normal' }: {
 // Refs the deck's on-screen position so AnimatedCard can fly from there into the hand.
 const deckPosRef: React.MutableRefObject<{ x: number; y: number } | null> = { current: null };
 
-function CenterPiles({ deckCount, pile, burnedCount, lastBurnSize }: {
+function CenterPiles({ deckCount, pile, burnedCount, lastBurnSize, incomingTopId }: {
   deckCount: number; pile: PileEntry[]; burnedCount: number; lastBurnSize: number;
+  // ID of a card whose flying-in animation (playAnim) is currently in flight
+  // toward the pile. While that animation is running, we hide the pile's own
+  // top-card render so the viewer only sees the flying card — not the flying
+  // card AND a duplicate already-at-destination card simultaneously.
+  incomingTopId?: string | null;
 }) {
   const top = pile[pile.length - 1];
+  const hideTop = !!(top && incomingTopId && top.card.id === incomingTopId);
   const deckRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const update = () => {
@@ -1299,7 +1305,7 @@ function CenterPiles({ deckCount, pile, burnedCount, lastBurnSize }: {
           layerCards={pile.slice(0, -1)}
           top={
             <AnimatePresence mode="popLayout">
-              {top
+              {top && !hideTop
                 ? <AnimatedCard key={top.card.id} layoutId={top.card.id} card={top.card} jokerEffRank={top.effRank} />
                 : null}
             </AnimatePresence>
@@ -2063,8 +2069,15 @@ function IntroSequence({
             // creates the face-down / face-up / hand lanes toward each player.
             const tangent = (col - 1) * 14;
             const radial = (row - 1) * 18;
+            // Viewer is always slot 0 (bottom of the ellipse). Their dealt
+            // cards land just below the chip so the viewer reads "these
+            // are my cards, here at the front of the table" rather than
+            // having the cards overlap the chip. Other seats keep their
+            // tight radial spread because they're decorative.
+            const isViewerSeat = i === 0;
+            const viewerBias = isViewerSeat ? 22 : 0;
             const finalX = pos.x + tangentX * tangent + Math.cos(pos.angle) * radial;
-            const finalY = pos.y + tangentY * tangent + Math.sin(pos.angle) * radial * 0.72;
+            const finalY = pos.y + tangentY * tangent + Math.sin(pos.angle) * radial * 0.72 + viewerBias;
             const midX = finalX * 0.46 + tangentX * (col - 1) * 8;
             const midY = finalY * 0.46 - 34 + row * 5;
             return (
@@ -2075,11 +2088,11 @@ function IntroSequence({
                   x: [0, midX, finalX],
                   y: [0, midY, finalY],
                   opacity: [0, 1, 1, 0.94],
-                  // Bumped up so dealt cards read clearly at every stage:
-                  // full size at the deck, ~85% mid-flight (gives a sense
-                  // of "lifting off the deck"), and 60% at the landing
-                  // spot (was 43% — too small to identify the rank/suit).
-                  scale: [1.0, 0.85, 0.60],
+                  // Cards read clearly at every stage of the deal:
+                  // full size at the deck, ~92% mid-flight (small lift),
+                  // 75% at the landing spot — large enough that the
+                  // rank/suit are immediately legible at each seat.
+                  scale: [1.0, 0.92, 0.75],
                   rotate: [0, rot + (col - 1) * 7, rot + (col - 1) * 4],
                 }}
                 transition={{
@@ -4663,7 +4676,15 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
                 />
               );
             };
-            const center = <CenterPiles deckCount={state.deck.length} pile={state.pile} burnedCount={state.burnedCount} lastBurnSize={state.lastBurnSize} />;
+            // Suppress the pile's static top-card render while a playAnim
+            // flight is mid-air FOR THAT EXACT CARD. Prevents the "two
+            // cards" visual glitch where the flying playAnim card and the
+            // pile's instantly-materialized AnimatedCard would both be
+            // visible during the ~420ms flight.
+            const incomingTopId = playAnim
+              ? playAnim.cards[playAnim.cards.length - 1]?.id ?? null
+              : null;
+            const center = <CenterPiles deckCount={state.deck.length} pile={state.pile} burnedCount={state.burnedCount} lastBurnSize={state.lastBurnSize} incomingTopId={incomingTopId} />;
 
             const safeViewer = viewer >= 0 ? viewer : state.current;
             return (
