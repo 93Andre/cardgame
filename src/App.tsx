@@ -1790,14 +1790,19 @@ function IntroSequence({
       window.visualViewport?.removeEventListener('scroll', update);
     };
   }, []);
-  // Stage size — generous reserves on every side. Width caps lower (680)
-  // and height caps lower (440) on desktop so the table never crowds the
-  // viewport edges. Chip margin bumps to 100px / 90px so the seat chips
-  // land safely INSIDE the brown rim (which extends 16px past the stage
-  // via the `.table-stage::before` pseudo). Result: chips sit on the felt,
-  // not on the wood, regardless of viewport size.
-  const stageW = Math.min(680, vw - 48);
-  const stageH = Math.min(440, vh - 120);       // 120px reserve total (top + bottom)
+  // Stage size — the brown rim (`.table-stage::before { inset: -16px }`)
+  // and a heavy outer drop-shadow (~26px below) add ~50px of visual
+  // extent BEYOND the stage box. We reserve enough viewport headroom so
+  // the FULL visible table (rim + shadow) always fits with margin. That
+  // means the deck — which lives at the stage's geometric centre — is
+  // also at the visible table's centre, not below it just because the
+  // table got clipped at the bottom of the viewport.
+  //
+  // Width caps at 620 (was 680), height at 380 (was 440). Mobile / small
+  // viewports shrink further via the vw/vh formulas. Chip margins stay
+  // generous so chips land on the felt, not the rim.
+  const stageW = Math.min(620, vw - 56);        // 28px margin per side
+  const stageH = Math.min(380, vh - 180);       // 90px reserve per side (rim + shadow + breathing room)
   const RX = Math.max(120, stageW / 2 - 100);
   const RY = Math.max(80,  stageH / 2 - 90);
   const positions = useMemo(() => {
@@ -1975,7 +1980,15 @@ function IntroSequence({
                 delay: (ESTABLISH_MS + i * REEL_PER_CHIP_MS) / 1000,
                 type: 'spring', stiffness: 260, damping: 22,
               }}
-              className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-1.5 pointer-events-none"
+              className="absolute left-1/2 top-1/2 flex flex-col items-center gap-1.5 pointer-events-none"
+              // CSS individual `translate:` property — composes with
+              // framer-motion's `transform: translate3d()` instead of
+              // being overwritten by it. Tailwind's `-translate-x-1/2
+              // -translate-y-1/2` compiles to `transform: translate(-50%,
+              // -50%)`, which framer-motion clobbers as soon as it
+              // animates `x` / `y`, biasing the element by half its own
+              // width/height from the intended centre.
+              style={{ translate: '-50% -50%' }}
             >
               <div
                 className={`w-12 h-12 rounded-full ring-2 ring-white/30 shadow-[0_8px_24px_rgba(0,0,0,0.45)] flex items-center justify-center text-2xl bg-gradient-to-br ${def?.gradient ?? 'from-slate-500 to-slate-800'}`}
@@ -2011,7 +2024,10 @@ function IntroSequence({
                 duration: SHUFFLE_MS / 1000,
                 ease: 'easeInOut',
               }}
-              className="absolute -translate-x-1/2 -translate-y-1/2"
+              className="absolute"
+              // CSS `translate:` composes with framer-motion's `transform`
+              // (Tailwind's translate-x/y is overwritten by motion's x/y).
+              style={{ translate: '-50% -50%' }}
             >
               <CardFace hidden />
             </motion.div>
@@ -2054,12 +2070,16 @@ function IntroSequence({
             return (
               <motion.div
                 key={`deal-${i}-${cardNo}`}
-                initial={{ x: 0, y: 0, opacity: 0, scale: 0.92, rotate: 0 }}
+                initial={{ x: 0, y: 0, opacity: 0, scale: 1.0, rotate: 0 }}
                 animate={{
                   x: [0, midX, finalX],
                   y: [0, midY, finalY],
                   opacity: [0, 1, 1, 0.94],
-                  scale: [0.92, 0.70, 0.43],
+                  // Bumped up so dealt cards read clearly at every stage:
+                  // full size at the deck, ~85% mid-flight (gives a sense
+                  // of "lifting off the deck"), and 60% at the landing
+                  // spot (was 43% — too small to identify the rank/suit).
+                  scale: [1.0, 0.85, 0.60],
                   rotate: [0, rot + (col - 1) * 7, rot + (col - 1) * 4],
                 }}
                 transition={{
@@ -2068,7 +2088,10 @@ function IntroSequence({
                   ease: [0.22, 0.82, 0.28, 1.0],
                   opacity: { duration: DEAL_TRAVEL_MS / 1000, times: [0, 0.12, 0.82, 1] },
                 }}
-                className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
+                className="absolute left-1/2 top-1/2"
+                // CSS `translate:` composes with framer-motion's
+                // `transform: translate3d()` instead of being overwritten.
+                style={{ translate: '-50% -50%' }}
               >
                 {visibleCard
                   ? <CardFace card={visibleCard} />
