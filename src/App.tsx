@@ -1231,10 +1231,16 @@ function CardStack({ count, top, layerCards, emptyLabel, tone = 'normal' }: {
 // Refs the deck's on-screen position so AnimatedCard can fly from there into the hand.
 const deckPosRef: React.MutableRefObject<{ x: number; y: number } | null> = { current: null };
 
-function CenterPiles({ deckCount, pile, burnedCount, lastBurnSize }: {
+function CenterPiles({ deckCount, pile, burnedCount, lastBurnSize, incomingTopId }: {
   deckCount: number; pile: PileEntry[]; burnedCount: number; lastBurnSize: number;
+  // ID of a card whose flying-in animation (playAnim) is currently in flight
+  // toward the pile. While that animation is running, we hide the pile's own
+  // top-card render so the viewer only sees the flying card — not the flying
+  // card AND a duplicate already-at-destination card simultaneously.
+  incomingTopId?: string | null;
 }) {
   const top = pile[pile.length - 1];
+  const hideTop = !!(top && incomingTopId && top.card.id === incomingTopId);
   const deckRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const update = () => {
@@ -1299,7 +1305,7 @@ function CenterPiles({ deckCount, pile, burnedCount, lastBurnSize }: {
           layerCards={pile.slice(0, -1)}
           top={
             <AnimatePresence mode="popLayout">
-              {top
+              {top && !hideTop
                 ? <AnimatedCard key={top.card.id} layoutId={top.card.id} card={top.card} jokerEffRank={top.effRank} />
                 : null}
             </AnimatePresence>
@@ -1767,19 +1773,44 @@ function IntroSequence({
   // side seats outside the visible area. We measure once on mount and on
   // resize, then derive RX/RY from the smaller dimension. Falls back to
   // the desktop sizing during SSR / first paint.
-  const [vw, setVW] = useState(() => (typeof window === 'undefined' ? 1024 : window.innerWidth));
-  const [vh, setVH] = useState(() => (typeof window === 'undefined' ? 768 : window.innerHeight));
+  // Viewport tracking. We prefer visualViewport — it excludes the iOS
+  // dynamic toolbar / URL bar, so `top: 50%` of a flex-centred container
+  // lands at the TRUE visible centre rather than the layout-viewport
+  // centre that includes the area behind the browser chrome. Fall back
+  // to innerWidth/innerHeight for browsers without visualViewport.
+  const readVV = () => {
+    if (typeof window === 'undefined') return { w: 1024, h: 768 };
+    const vv = window.visualViewport;
+    return { w: vv?.width ?? window.innerWidth, h: vv?.height ?? window.innerHeight };
+  };
+  const [vw, setVW] = useState(() => readVV().w);
+  const [vh, setVH] = useState(() => readVV().h);
   useEffect(() => {
-    const update = () => { setVW(window.innerWidth); setVH(window.innerHeight); };
+    const update = () => { const { w, h } = readVV(); setVW(w); setVH(h); };
     window.addEventListener('resize', update);
-    return () => window.removeEventListener('resize', update);
+    window.visualViewport?.addEventListener('resize', update);
+    window.visualViewport?.addEventListener('scroll', update);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.visualViewport?.removeEventListener('resize', update);
+      window.visualViewport?.removeEventListener('scroll', update);
+    };
   }, []);
-  // Stage targets up to 760×540 on desktop, but shrinks proportionally so
-  // 2*RX + chip width fits the viewport with margin to spare.
-  const stageW = Math.min(760, vw - 32);
-  const stageH = Math.min(540, vh * 0.70);
-  const RX = Math.max(110, stageW / 2 - 80);    // 80px margin per side reserves room for chips
-  const RY = Math.max(70,  stageH / 2 - 70);
+  // Stage size — the brown rim (`.table-stage::before { inset: -16px }`)
+  // and a heavy outer drop-shadow (~26px below) add ~50px of visual
+  // extent BEYOND the stage box. We reserve enough viewport headroom so
+  // the FULL visible table (rim + shadow) always fits with margin. That
+  // means the deck — which lives at the stage's geometric centre — is
+  // also at the visible table's centre, not below it just because the
+  // table got clipped at the bottom of the viewport.
+  //
+  // Width caps at 620 (was 680), height at 380 (was 440). Mobile / small
+  // viewports shrink further via the vw/vh formulas. Chip margins stay
+  // generous so chips land on the felt, not the rim.
+  const stageW = Math.min(620, vw - 56);        // 28px margin per side
+  const stageH = Math.min(380, vh - 180);       // 90px reserve per side (rim + shadow + breathing room)
+  const RX = Math.max(120, stageW / 2 - 100);
+  const RY = Math.max(80,  stageH / 2 - 90);
   const positions = useMemo(() => {
     return players.map((p, i) => {
       // Start at bottom, distribute clockwise. Add tiny offsets so 2-player
@@ -1873,7 +1904,11 @@ function IntroSequence({
     <motion.div
       initial={{ opacity: 0 }} animate={{ opacity: skipped ? 0 : 1 }} exit={{ opacity: 0 }}
       transition={{ duration: 0.25 }}
-      className="fixed inset-0 z-40 cursor-pointer overflow-hidden"
+      // Flex-centred container: more robust than the previous absolute
+      // + translate approach. The stage is a direct flex child and is
+      // centred along both axes regardless of mobile address bars,
+      // sidebar toggles, or ancestor transforms (framer-motion safe).
+      className="fixed inset-0 z-40 cursor-pointer overflow-hidden flex items-center justify-center"
       style={{
         background: [
           'radial-gradient(ellipse 90% 70% at 50% 48%, rgba(39,91,67,0.58), rgba(8,20,14,0.82) 68%, rgba(0,0,0,0.90))',
@@ -1925,18 +1960,15 @@ function IntroSequence({
         );
       })()}
 
-      {/* Stage — all elliptical layout coordinates are relative to the centre of this box.
-          Width/height are derived from the viewport so chips/cards never escape it. */}
+      {/* Stage — all elliptical layout coordinates are relative to the
+          centre of this box. Sized from visualViewport so the table fits
+          comfortably even with mobile chrome / browser toolbars. Flex
+          centring on the parent positions us; we don't self-position. */}
       <div
-        className="table-stage relative"
+        className="table-stage relative shrink-0"
         style={{
-          position: 'absolute',
-          left: '50%',
-          top: '50%',
           width: stageW,
           height: stageH,
-          transform: 'translate(-50%, -50%)',
-          transformOrigin: 'center center',
         }}
       >
         {/* Player chips — pop in around the table in order */}
@@ -1954,7 +1986,15 @@ function IntroSequence({
                 delay: (ESTABLISH_MS + i * REEL_PER_CHIP_MS) / 1000,
                 type: 'spring', stiffness: 260, damping: 22,
               }}
-              className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-1.5 pointer-events-none"
+              className="absolute left-1/2 top-1/2 flex flex-col items-center gap-1.5 pointer-events-none"
+              // CSS individual `translate:` property — composes with
+              // framer-motion's `transform: translate3d()` instead of
+              // being overwritten by it. Tailwind's `-translate-x-1/2
+              // -translate-y-1/2` compiles to `transform: translate(-50%,
+              // -50%)`, which framer-motion clobbers as soon as it
+              // animates `x` / `y`, biasing the element by half its own
+              // width/height from the intended centre.
+              style={{ translate: '-50% -50%' }}
             >
               <div
                 className={`w-12 h-12 rounded-full ring-2 ring-white/30 shadow-[0_8px_24px_rgba(0,0,0,0.45)] flex items-center justify-center text-2xl bg-gradient-to-br ${def?.gradient ?? 'from-slate-500 to-slate-800'}`}
@@ -1990,7 +2030,10 @@ function IntroSequence({
                 duration: SHUFFLE_MS / 1000,
                 ease: 'easeInOut',
               }}
-              className="absolute -translate-x-1/2 -translate-y-1/2"
+              className="absolute"
+              // CSS `translate:` composes with framer-motion's `transform`
+              // (Tailwind's translate-x/y is overwritten by motion's x/y).
+              style={{ translate: '-50% -50%' }}
             >
               <CardFace hidden />
             </motion.div>
@@ -2026,19 +2069,30 @@ function IntroSequence({
             // creates the face-down / face-up / hand lanes toward each player.
             const tangent = (col - 1) * 14;
             const radial = (row - 1) * 18;
+            // Viewer is always slot 0 (bottom of the ellipse). Their dealt
+            // cards land just below the chip so the viewer reads "these
+            // are my cards, here at the front of the table" rather than
+            // having the cards overlap the chip. Other seats keep their
+            // tight radial spread because they're decorative.
+            const isViewerSeat = i === 0;
+            const viewerBias = isViewerSeat ? 22 : 0;
             const finalX = pos.x + tangentX * tangent + Math.cos(pos.angle) * radial;
-            const finalY = pos.y + tangentY * tangent + Math.sin(pos.angle) * radial * 0.72;
+            const finalY = pos.y + tangentY * tangent + Math.sin(pos.angle) * radial * 0.72 + viewerBias;
             const midX = finalX * 0.46 + tangentX * (col - 1) * 8;
             const midY = finalY * 0.46 - 34 + row * 5;
             return (
               <motion.div
                 key={`deal-${i}-${cardNo}`}
-                initial={{ x: 0, y: 0, opacity: 0, scale: 0.92, rotate: 0 }}
+                initial={{ x: 0, y: 0, opacity: 0, scale: 1.0, rotate: 0 }}
                 animate={{
                   x: [0, midX, finalX],
                   y: [0, midY, finalY],
                   opacity: [0, 1, 1, 0.94],
-                  scale: [0.92, 0.70, 0.43],
+                  // Cards read clearly at every stage of the deal:
+                  // full size at the deck, ~92% mid-flight (small lift),
+                  // 75% at the landing spot — large enough that the
+                  // rank/suit are immediately legible at each seat.
+                  scale: [1.0, 0.92, 0.75],
                   rotate: [0, rot + (col - 1) * 7, rot + (col - 1) * 4],
                 }}
                 transition={{
@@ -2047,7 +2101,10 @@ function IntroSequence({
                   ease: [0.22, 0.82, 0.28, 1.0],
                   opacity: { duration: DEAL_TRAVEL_MS / 1000, times: [0, 0.12, 0.82, 1] },
                 }}
-                className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
+                className="absolute left-1/2 top-1/2"
+                // CSS `translate:` composes with framer-motion's
+                // `transform: translate3d()` instead of being overwritten.
+                style={{ translate: '-50% -50%' }}
               >
                 {visibleCard
                   ? <CardFace card={visibleCard} />
@@ -4619,7 +4676,15 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
                 />
               );
             };
-            const center = <CenterPiles deckCount={state.deck.length} pile={state.pile} burnedCount={state.burnedCount} lastBurnSize={state.lastBurnSize} />;
+            // Suppress the pile's static top-card render while a playAnim
+            // flight is mid-air FOR THAT EXACT CARD. Prevents the "two
+            // cards" visual glitch where the flying playAnim card and the
+            // pile's instantly-materialized AnimatedCard would both be
+            // visible during the ~420ms flight.
+            const incomingTopId = playAnim
+              ? playAnim.cards[playAnim.cards.length - 1]?.id ?? null
+              : null;
+            const center = <CenterPiles deckCount={state.deck.length} pile={state.pile} burnedCount={state.burnedCount} lastBurnSize={state.lastBurnSize} incomingTopId={incomingTopId} />;
 
             const safeViewer = viewer >= 0 ? viewer : state.current;
             return (
