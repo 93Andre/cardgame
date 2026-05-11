@@ -62,45 +62,122 @@ body {
   box-shadow: inset 0 0 120px rgba(0, 0, 0, 0.35);
 }
 
+/* Poker-table stage. Three layered elements (stacked back-to-front):
+ *   1. ::before — the wooden RIM (inset: -16px so it extends past the felt).
+ *      Polished walnut look from a radial gradient + a soft brass highlight
+ *      ring at the top via an inner ring.
+ *   2. The element's own background — the green FELT.
+ *   3. ::after — a subtle 22px grid laid into the felt, masked to soft-light.
+ * Heavy outer shadow gives the whole table a "sits on the floor" depth.
+ */
 .table-stage {
   isolation: isolate;
   border-radius: 999px;
   background:
-    radial-gradient(ellipse at 50% 50%, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0.04) 34%, transparent 68%),
-    radial-gradient(ellipse at 50% 50%, #376f54 0%, #25533e 58%, #183528 100%);
+    radial-gradient(ellipse at 50% 32%, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0.03) 36%, transparent 64%),
+    radial-gradient(ellipse at 50% 50%, #3b7558 0%, #285a42 56%, #163326 100%);
   box-shadow:
-    inset 0 0 0 2px rgba(255,255,255,0.09),
-    inset 0 0 80px rgba(0,0,0,0.34),
-    0 26px 70px rgba(0,0,0,0.34);
+    inset 0 0 0 1px rgba(255,255,255,0.08),
+    inset 0 0 90px rgba(0,0,0,0.36),
+    0 28px 80px rgba(0,0,0,0.40);
 }
 
+/* Wooden rim. Radial light source baked in (warmer top, deeper bottom) so
+ * the rim reads as a smooth polished surface rather than a flat band of
+ * brown. A thin darker inner edge separates the wood from the felt
+ * cleanly — the direction chevrons (rendered in App.tsx) sit OVER this
+ * surface, so the rim itself stays understated. */
 .table-stage::before {
   content: "";
   position: absolute;
-  inset: -16px;
+  inset: -18px;
   z-index: -2;
   border-radius: inherit;
   background:
-    linear-gradient(135deg, rgba(120,72,35,0.92), rgba(55,31,16,0.96) 52%, rgba(142,88,45,0.88));
+    radial-gradient(ellipse at 50% 30%, rgba(255,222,176,0.20) 0%, transparent 50%),
+    radial-gradient(ellipse at 50% 50%, #7a4a25 0%, #5a3217 55%, #321a0c 100%);
   box-shadow:
-    inset 0 0 0 2px rgba(255,255,255,0.08),
-    inset 0 0 24px rgba(0,0,0,0.55),
-    0 12px 34px rgba(0,0,0,0.32);
+    /* outer hairline so the wood doesn't blur into the floor visually */
+    inset 0 0 0 1px rgba(255,232,196,0.18),
+    /* tight inner shadow ring — defines the felt boundary crisply */
+    inset 0 0 0 18px rgba(40,22,10,0.55),
+    inset 0 0 26px rgba(0,0,0,0.55),
+    0 16px 38px rgba(0,0,0,0.34);
 }
 
+/* Direction-of-play chevron — neon emerald arrow on the rim. Bigger
+ * than before (24×24) so it reads at a glance, and the chase pulse uses
+ * a strong opacity + scale change so the moving wave is obvious. The
+ * SVG mask draws an OPEN chevron (>) pointing right; the rotation on
+ * the parent aims it along the rim tangent.
+ */
+/* Brown / brass chevron palette — sits on the wooden rim as a quiet
+ * inlay rather than a neon highlight. Base is a low-opacity warm brown
+ * so the chevrons read as part of the rim; the chase pulse warms them
+ * to a soft brass-gold with a subtle amber glow. Subtle by design. */
+.direction-chevron {
+  width: 14px;
+  height: 14px;
+  background-color: rgba(160,108,58,0.42);
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='-7 -7 14 14'><path d='M -3 -4 L 3 0 L -3 4' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+          mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='-7 -7 14 14'><path d='M -3 -4 L 3 0 L -3 4' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  -webkit-mask-size: contain;
+          mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+          mask-repeat: no-repeat;
+  filter: drop-shadow(0 0 1px rgba(90,52,22,0.50));
+  will-change: transform, background-color, filter;
+}
+
+/* Speed-boost chase — toned right down. The bright peak is a warm
+ * brass colour, not a neon flash. Scale + glow are softer than the
+ * old emerald version so the wave reads as a gentle "light running
+ * along the inlay" instead of a runway boost pad. */
+@keyframes direction-chase {
+  0% {
+    background-color: rgba(160,108,58,0.42);
+    transform: scale(1.0);
+    filter: drop-shadow(0 0 1px rgba(90,52,22,0.45));
+  }
+  6% {
+    background-color: rgba(232,196,128,0.95);
+    transform: scale(1.18);
+    filter:
+      drop-shadow(0 0 4px rgba(214,165,96,0.85))
+      drop-shadow(0 0 10px rgba(180,130,75,0.55));
+  }
+  18% {
+    background-color: rgba(196,148,96,0.78);
+    transform: scale(1.06);
+    filter: drop-shadow(0 0 2px rgba(180,130,75,0.55));
+  }
+  35% {
+    background-color: rgba(160,108,58,0.42);
+    transform: scale(1.0);
+    filter: drop-shadow(0 0 1px rgba(90,52,22,0.45));
+  }
+  100% {
+    background-color: rgba(160,108,58,0.42);
+    transform: scale(1.0);
+    filter: drop-shadow(0 0 1px rgba(90,52,22,0.45));
+  }
+}
+
+/* Subtle grid laid into the felt, masked to soft-light so it's only
+ * perceptible at peripheral vision. Keeps the felt from looking flat. */
 .table-stage::after {
   content: "";
   position: absolute;
-  inset: 8px;
+  inset: 12px;
   z-index: -1;
   pointer-events: none;
   border-radius: inherit;
   background-image:
-    linear-gradient(90deg, rgba(255,255,255,0.035) 1px, transparent 1px),
-    linear-gradient(0deg, rgba(0,0,0,0.035) 1px, transparent 1px);
+    linear-gradient(90deg, rgba(255,255,255,0.030) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(0,0,0,0.025) 1px, transparent 1px);
   background-size: 22px 22px;
   mix-blend-mode: soft-light;
-  opacity: 0.55;
+  opacity: 0.50;
 }
 
 .table-felt-mark {

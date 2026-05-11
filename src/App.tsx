@@ -813,6 +813,148 @@ function PlayerArea({ player, isCurrent, isViewer, isSpectatorFocus, onSpectator
   );
 }
 
+/* ============== Direction-of-play chevrons ============== */
+
+// Speed-boost arrows that ride the table's wooden rim. The table is a
+// stadium shape (rounded rect with border-radius: 999px), so an ellipse
+// parameterisation drifts inside the felt at diagonal angles. This
+// component measures the actual wrapper aspect ratio and computes true
+// stadium-boundary positions so every chevron sits on the brown rim
+// regardless of viewport.
+function DirectionChevrons({ direction, flashKey }: { direction: 1 | -1; flashKey?: number }) {
+  const COUNT = 22;
+  const CYCLE_S = 2.0;
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  // Aspect ratio of the wrapper (W / H). We re-measure on resize so the
+  // stadium math stays correct as the layout changes.
+  const [aspect, setAspect] = useState<number | null>(null);
+  useEffect(() => {
+    if (!wrapperRef.current) return;
+    const measure = () => {
+      const el = wrapperRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) setAspect(r.width / r.height);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(wrapperRef.current);
+    return () => ro.disconnect();
+  }, []);
+
+  // Compute point + tangent on the stadium boundary at a given angle.
+  // Stadium is parameterised in NORMALISED coordinates: full width = aspect,
+  // full height = 1. Border radius = min(aspect, 1) / 2 (pill shape).
+  // Returns { x, y } in [-aspect/2, aspect/2] × [-1/2, 1/2] and tangentDeg.
+  const stadiumPoint = (theta: number, ratio: number) => {
+    const a = ratio / 2;     // semi-width
+    const b = 0.5;           // semi-height
+    const cosT = Math.cos(theta);
+    const sinT = Math.sin(theta);
+
+    if (a >= b) {
+      // Horizontal pill — rounded LEFT/RIGHT, straight TOP/BOTTOM.
+      const r = b;
+      const c = a - r;
+      if (Math.abs(sinT) > 1e-9) {
+        const tStraight = b / Math.abs(sinT);
+        const xS = tStraight * cosT;
+        if (Math.abs(xS) <= c) {
+          // CW: top edge (sinT<0) → +x; bottom edge → -x.
+          const tangent = sinT > 0 ? 180 : 0;
+          return { x: xS, y: Math.sign(sinT) * b, tangentDeg: tangent };
+        }
+      }
+      const cx = cosT >= 0 ? c : -c;
+      const B = -2 * cosT * cx;
+      const C = cx * cx - r * r;
+      const disc = B * B - 4 * C;
+      const t = disc < 0 ? r : (-B + Math.sqrt(disc)) / 2;
+      const x = t * cosT;
+      const y = t * sinT;
+      const tangentDeg = (Math.atan2(x - cx, -y) * 180) / Math.PI;
+      return { x, y, tangentDeg };
+    }
+
+    // Vertical pill — rounded TOP/BOTTOM, straight LEFT/RIGHT.
+    // Without this branch, the horizontal-pill math collapses to a
+    // circle when aspect < 1 (because c = a - min(a,b) = 0), which is
+    // why chevrons were scattered on mobile portrait layouts.
+    const r = a;
+    const cy = b - r;
+    if (Math.abs(cosT) > 1e-9) {
+      const tStraight = a / Math.abs(cosT);
+      const yS = tStraight * sinT;
+      if (Math.abs(yS) <= cy) {
+        // CW: right edge → +y (90°); left edge → -y (270°).
+        const tangent = cosT > 0 ? 90 : 270;
+        return { x: Math.sign(cosT) * a, y: yS, tangentDeg: tangent };
+      }
+    }
+    // Rounded end — circle centred at (0, ±cy) with radius r=a.
+    const cyEnd = sinT >= 0 ? cy : -cy;
+    const B = -2 * sinT * cyEnd;
+    const C = cyEnd * cyEnd - r * r;
+    const disc = B * B - 4 * C;
+    const t = disc < 0 ? r : (-B + Math.sqrt(disc)) / 2;
+    const x = t * cosT;
+    const y = t * sinT;
+    // Tangent rotated 90° from radial in CW direction (screen coords
+    // y-down). Radial = (x, y - cyEnd). CW tangent = (cyEnd - y, x).
+    const tangentDeg = (Math.atan2(x, cyEnd - y) * 180) / Math.PI;
+    return { x, y, tangentDeg };
+  };
+
+  return (
+    <div
+      ref={wrapperRef}
+      key={`direction-chevrons-${direction}-${flashKey ?? 0}`}
+      className="absolute pointer-events-none overflow-visible"
+      // -9px so the wrapper edge falls on the rim's centre line (rim is
+      // 18px thick total). The chevrons centred on this edge sit
+      // squarely on the brown wood.
+      style={{ inset: '-9px' }}
+    >
+      {aspect !== null && Array.from({ length: COUNT }).map((_, i) => {
+        const angle = (i / COUNT) * Math.PI * 2 - Math.PI / 2;
+        const pt = stadiumPoint(angle, aspect);
+        // Convert normalised stadium coords back to percentage of wrapper.
+        const xPct = 50 + (pt.x / (aspect / 2)) * 50;
+        const yPct = 50 + (pt.y / 0.5) * 50;
+        // CW for direction=1; CCW reverses tangent by 180°.
+        const tangentDeg = pt.tangentDeg + (direction === 1 ? 0 : 180);
+        // Stagger pulse so the bright peak travels with the arrows.
+        const seqIdx = direction === 1 ? (COUNT - 1 - i) : i;
+        const delaySec = -(seqIdx / COUNT) * CYCLE_S;
+        return (
+          <div
+            key={i}
+            className="absolute"
+            style={{
+              left: `${xPct}%`,
+              top: `${yPct}%`,
+              translate: '-50% -50%',
+              rotate: `${tangentDeg}deg`,
+            }}
+            aria-hidden
+          >
+            <div
+              className="direction-chevron"
+              style={{
+                animationName: 'direction-chase',
+                animationDuration: `${CYCLE_S}s`,
+                animationTimingFunction: 'linear',
+                animationIterationCount: 'infinite',
+                animationDelay: `${delaySec}s`,
+              }}
+            />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /* ============== Circular table layout ============== */
 
 // Arranges player tiles around a central pile area, with the viewer always at the bottom
@@ -895,11 +1037,15 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
   // Modest values across the board — too large pushes the viewer's own
   // bottom tile off the container.
   const yOffset = 5;
-  // Keep the direction rail inside the player seats. Using the same ellipse
-  // as the seats made the line feel pasted across the table; this reads more
-  // like a quiet inlay around the pile area.
-  const railRx = rx * 0.78;
-  const railRy = ry * 0.74;
+  // Direction marker rides the brass track inlaid along the INNER edge of
+  // the wooden rim (defined in `.table-stage::before` in index.css). The
+  // track sits ~1px outside the felt edge, so the marker ellipse is just
+  // past 50% of the viewBox. With non-scaling-stroke + overflow:visible on
+  // the SVG, the ellipse can extend past the stage box and trace the rim
+  // cleanly. yOffset is added below in the SVG so the comet shifts down
+  // with the seats.
+  const railRx = 0.514;
+  const railRy = 0.522;
 
   return (
     <div
@@ -921,57 +1067,14 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
       >
         LATRINE
       </div>
-      {/* Direction-of-play track: a warm inlaid rail. It sits inside the seats
-          so it feels carved into the table rather than drawn over the game. */}
-      <svg
-        key={`flow-comet-${direction}-${directionFlashKey ?? 0}`}
-        viewBox="0 0 100 100" preserveAspectRatio="none"
-        className="absolute inset-0 w-full h-full pointer-events-none overflow-visible"
-      >
-        <defs>
-          <linearGradient id="direction-inlay" x1="0" x2="1" y1="0" y2="1">
-            <stop offset="0%" stopColor="rgba(255,224,178,0.32)" />
-            <stop offset="48%" stopColor="rgba(180,105,48,0.26)" />
-            <stop offset="100%" stopColor="rgba(44,24,12,0.30)" />
-          </linearGradient>
-          <linearGradient id="direction-marker" x1="0" x2="1" y1="0" y2="0">
-            <stop offset="0%" stopColor="rgba(251,191,36,0)" />
-            <stop offset="48%" stopColor="rgba(253,230,138,0.70)" />
-            <stop offset="100%" stopColor="rgba(255,251,235,0.88)" />
-          </linearGradient>
-        </defs>
-        {/* Soft recessed groove. */}
-        <ellipse
-          cx="50" cy="50" rx={railRx * 100} ry={railRy * 100}
-          fill="none" stroke="rgba(30,16,8,0.28)" strokeWidth="4.6"
-          vectorEffect="non-scaling-stroke"
-        />
-        {/* Warm table inlay. */}
-        <ellipse
-          cx="50" cy="50" rx={railRx * 100} ry={railRy * 100}
-          fill="none" stroke="url(#direction-inlay)" strokeWidth="2"
-          vectorEffect="non-scaling-stroke"
-        />
-        {/* Inner highlight keeps the rail crisp without adding visual noise. */}
-        <ellipse
-          cx="50" cy="50" rx={railRx * 100} ry={railRy * 100}
-          fill="none" stroke="rgba(255,246,220,0.14)" strokeWidth="0.75"
-          vectorEffect="non-scaling-stroke"
-        />
-        {/* Moving direction marker. */}
-        <ellipse
-          cx="50" cy="50" rx={railRx * 100} ry={railRy * 100}
-          pathLength={100}
-          fill="none"
-          stroke="url(#direction-marker)" strokeWidth="3.2"
-          strokeDasharray="6.5 93.5" strokeLinecap="round"
-          vectorEffect="non-scaling-stroke"
-          style={{
-            animation: `flow-comet-${direction === 1 ? 'cw' : 'ccw'} 5.2s linear infinite`,
-            filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.42))',
-          }}
-        />
-      </svg>
+      {/* Direction-of-play chevrons — brass speed-boost arrows that ride
+          the wooden rim. The table is a STADIUM shape (rounded rect,
+          border-radius: 999px), so a naive ellipse parameterisation
+          places diagonal chevrons inside the felt instead of on the
+          rim. We measure the wrapper's actual aspect ratio and compute
+          true stadium-boundary points so every chevron sits on the
+          brown wood regardless of layout. */}
+      <DirectionChevrons direction={direction} flashKey={directionFlashKey} />
 
       {players.map(p => {
         // Player slots are FIXED relative to the viewer — direction reversal only flips the
