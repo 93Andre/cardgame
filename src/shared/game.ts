@@ -59,9 +59,14 @@ export interface GameState {
   burnedCount: number;     // total cards burned across the whole game
   lastBurnSize: number;    // size of the most recent burn (for visual flourish), 0 = no recent burn
   // House rule: when a player picks up the pile, one card from those they picked up is revealed to everyone.
-  // pendingReveal: cards the picker can choose from (only set during 'reveal' phase)
-  // revealedPickup: the chosen card, broadcast for a few seconds after the choice
-  pendingReveal: { cards: Card[] } | null;
+  // pendingReveal: cards the picker can choose from (only set during 'reveal' phase).
+  //   legalIds: ids of cards in `cards` that WOULD have been a legal play on the
+  //   just-picked-up pile. The picker must reveal a card NOT in this set —
+  //   i.e., one they genuinely couldn't have played. Empty set is normal; if
+  //   every card was legal (edge case, e.g. server-timeout pickup), the
+  //   constraint is dropped to avoid stranding the player.
+  // revealedPickup: the chosen card, broadcast for a few seconds after the choice.
+  pendingReveal: { cards: Card[]; legalIds: string[] } | null;
   revealedPickup: { playerId: number; card: Card; ts: number } | null;
   stats: Record<number, PlayerStats>;
   aiDifficulty: AiDifficulty;
@@ -677,11 +682,18 @@ export function reducer(state: GameState, action: Action): GameState {
         };
       }
 
+      // House rule: the revealed card must be one the picker couldn't have
+      // legally played. Compute the set of LEGAL-on-prior-pile ids now (the
+      // pile is about to be cleared) so the UI can dim those choices and the
+      // REVEAL_CHOICE reducer can reject them.
+      const legalIds = handBeforePickup
+        .filter(c => canPlayCards([c], state.pile, state.sevenRestriction))
+        .map(c => c.id);
       const log = logLine(state, `${p.name} picked up ${pickedCards.length} — must reveal a hand card…`);
       return {
         ...state, players, pile: [], selected: [], sevenRestriction: false, log, flippedCard: null,
         phase: 'reveal',
-        pendingReveal: { cards: handBeforePickup },
+        pendingReveal: { cards: handBeforePickup, legalIds },
         revealedPickup: null,
         lastWasMine: false,
         stats: newStats, lastPlayerId: null,
@@ -746,6 +758,14 @@ export function reducer(state: GameState, action: Action): GameState {
       if (state.phase !== 'reveal' || !state.pendingReveal) return state;
       const chosen = state.pendingReveal.cards.find(c => c.id === action.id);
       if (!chosen) return state;
+      // Enforce the "must reveal a card you couldn't have played" rule.
+      // Reject the choice if it WAS legal-on-prior-pile, unless every card
+      // in hand was legal (edge case where the pickup itself was non-
+      // voluntary — e.g. server-side timeout — in which case any reveal is
+      // acceptable so the picker isn't stranded).
+      const { legalIds, cards } = state.pendingReveal;
+      const allWereLegal = legalIds.length === cards.length;
+      if (!allWereLegal && legalIds.includes(chosen.id)) return state;
       // Picked-up cards are already in the picker's hand (added during PICKUP_PILE).
       // The chosen card is from their pre-pickup hand — just publicly reveal it and pass turn.
       const log = logLine(state, `${state.players[state.current].name} revealed: ${chosen.rank}${chosen.suit}.`);
@@ -864,9 +884,15 @@ export function aiPickAction(state: GameState, aiId: number): Action | null {
     return { type: 'RESOLVE_FLIP' };
   }
   if (state.phase === 'reveal' && state.current === aiId && state.pendingReveal) {
-    // AI picks a random card to reveal (no strategic value to optimize).
-    const cards = state.pendingReveal.cards;
-    const choice = cards[Math.floor(Math.random() * cards.length)];
+    // Reveal must be a card that COULDN'T have been legally played. Pick
+    // randomly from the eligible (illegal-on-prior-pile) subset. If every
+    // card was legal (edge case), fall back to any card so the AI doesn't
+    // stall the table.
+    const { cards, legalIds } = state.pendingReveal;
+    const legalSet = new Set(legalIds);
+    const eligible = cards.filter(c => !legalSet.has(c.id));
+    const pool = eligible.length > 0 ? eligible : cards;
+    const choice = pool[Math.floor(Math.random() * pool.length)];
     return { type: 'REVEAL_CHOICE', id: choice.id };
   }
   // Out-of-turn plays: cuts (Ultimate, exact match by anyone) and chains
@@ -992,11 +1018,18 @@ export function redactForViewer(state: GameState, viewer: number): GameState {
   // Face-down cards stay hidden (those are gameplay-private to their owner)
   // and the deck order stays scrambled for everyone.
   const isSpectator = viewer === -1;
+  // pendingReveal is fully shown to the picker (so they can pick from their
+  // own cards) and to spectators (streaming view). For everyone else, both
+  // the cards AND the legalIds are stripped — legalIds would otherwise
+  // leak which of the picker's pre-pickup hand cards were playable.
   const pendingReveal = !state.pendingReveal
     ? null
     : (state.current === viewer || isSpectator
         ? state.pendingReveal
-        : { cards: state.pendingReveal.cards.map((_, i) => HIDDEN_CARD(`pr-${i}`)) });
+        : {
+            cards: state.pendingReveal.cards.map((_, i) => HIDDEN_CARD(`pr-${i}`)),
+            legalIds: [],
+          });
   return {
     ...state,
     players: state.players.map(p => {
