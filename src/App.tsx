@@ -662,12 +662,12 @@ function PlayerArea({ player, isCurrent, isViewer, isSpectatorFocus, onSpectator
       onClick={onSpectatorFocus}
       role={onSpectatorFocus ? 'button' : undefined}
       aria-pressed={onSpectatorFocus ? isSpectatorFocus : undefined}
-      className={`relative ${compact ? 'p-0.5 sm:p-1.5' : 'p-2 sm:p-3'} rounded-lg ${compact ? 'border sm:border-2' : 'border-2'} ${
+      className={`table-seat relative ${compact ? 'p-0.5 sm:p-1.5' : 'p-2 sm:p-3'} rounded-lg ${compact ? 'border sm:border-2' : 'border-2'} ${
         isSpectatorFocus
-          ? 'border-violet-400 bg-violet-50 ring-2 ring-violet-400 shadow-[0_0_18px_rgba(167,139,250,0.45)]'
+          ? 'border-violet-300 ring-2 ring-violet-400 shadow-[0_0_18px_rgba(167,139,250,0.45)]'
           : isCurrent
-            ? `${c.border} ${c.bg} ring-2 ${c.ring} active-player-glow`
-            : 'border-gray-300 bg-white/85'
+            ? `${c.border} ring-2 ${c.ring} active-player-glow`
+            : 'border-white/20'
       } ${recentlyActed ? 'player-acted-pulse' : ''} ${onSpectatorFocus ? 'cursor-pointer hover:ring-2 hover:ring-violet-300 transition-shadow' : ''} flex flex-col ${compact ? 'gap-0.5 sm:gap-1' : 'gap-2'} min-w-0 transition-transform duration-300 ${isCurrent && !isSpectatorFocus ? 'scale-[1.04]' : ''} ${!connected && !player.isAi && !isViewer ? 'opacity-70 saturate-50' : ''}`}>
       {/* Active-player spotlight — a soft amber radial gradient pouring
           down from above the tile, like a stage light. Layered behind
@@ -687,7 +687,7 @@ function PlayerArea({ player, isCurrent, isViewer, isSpectatorFocus, onSpectator
       {/* Turn-speed indicator: appears above the current player's tile after 15s of thinking,
           fills toward the 30s server-side auto-pickup cutoff. */}
       {isCurrent && typeof turnElapsedMs === 'number' && turnElapsedMs > 15000 && (
-        <div className="absolute -top-1 left-2 right-2 h-1 bg-gray-200 rounded-full overflow-hidden">
+        <div className="absolute -top-1 left-2 right-2 h-1 bg-white/15 rounded-full overflow-hidden">
           <div
             className={`h-full transition-all duration-1000 ease-linear ${
               turnElapsedMs > 27000 ? 'bg-rose-500'
@@ -713,8 +713,8 @@ function PlayerArea({ player, isCurrent, isViewer, isSpectatorFocus, onSpectator
               `min-w-0` lets the name claim available width before the
               hand-count chip wins. */}
           <span className="truncate">{player.name}</span>
-          {!compact && player.isAi && <span className="text-[10px] px-1 py-0.5 bg-gray-200 rounded shrink-0">AI</span>}
-          {!compact && isViewer && <span className="text-[10px] text-emerald-700 shrink-0">(you)</span>}
+          {!compact && player.isAi && <span className="text-[10px] px-1 py-0.5 bg-white/10 text-white/75 rounded shrink-0">AI</span>}
+          {!compact && isViewer && <span className="text-[10px] text-emerald-200 shrink-0">(you)</span>}
           {/* Away pip — surfaces "this player's app is suspended" so the
               rest of the table knows why the game isn't progressing.
               Hidden for AIs (always connected) and for the viewer (you
@@ -895,11 +895,16 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
   // Modest values across the board — too large pushes the viewer's own
   // bottom tile off the container.
   const yOffset = 5;
+  // Keep the direction rail inside the player seats. Using the same ellipse
+  // as the seats made the line feel pasted across the table; this reads more
+  // like a quiet inlay around the pile area.
+  const railRx = rx * 0.78;
+  const railRy = ry * 0.74;
 
   return (
     <div
-      className={`relative w-full mx-auto ${layout === 'desktop' ? 'flex-1' : ''}`}
-      style={{ aspectRatio, maxWidth: 1100, minHeight, maxHeight }}
+      className={`table-stage relative w-full mx-auto ${layout === 'desktop' ? 'flex-1' : ''}`}
+      style={{ aspectRatio, maxWidth: 1160, minHeight, maxHeight }}
     >
       {/* Felt centre monogram — a quiet "LATRINE" wordmark embroidered into
           the felt, visible behind the centre piles. Sits at z-0 with low
@@ -907,98 +912,63 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
           "this is a real table" touch when the eye lingers on the centre. */}
       <div
         aria-hidden
-        className="absolute left-1/2 -translate-x-1/2 pointer-events-none select-none"
+        className="table-felt-mark absolute left-1/2 -translate-x-1/2 pointer-events-none select-none"
         style={{
           top: `${50 + yOffset}%`,
           transform: 'translate(-50%, -50%)',
-          color: 'rgba(255,255,255,0.06)',
-          fontWeight: 900,
-          fontSize: 'clamp(1.5rem, 4vw, 2.6rem)',
-          letterSpacing: '0.32em',
-          textShadow: '0 1px 0 rgba(0,0,0,0.20), 0 0 18px rgba(16,185,129,0.18)',
-          whiteSpace: 'nowrap',
           zIndex: 0,
         }}
       >
         LATRINE
       </div>
-      {/* Direction-of-play track: a glowing neon comet orbiting the ellipse.
-          Three layered SVG strokes:
-            • base ring — faint full outline so the path is always readable
-            • glow — broad, blurred dash trailing slightly behind the head
-            • core — short bright dash that *is* the comet head
-          stroke-dashoffset animates around the path, in path direction (CW)
-          for direction=1, reversed via the `flow-comet-ccw` keyframe for
-          direction=-1. pathLength="100" normalises the dash math regardless
-          of the actual perimeter — the glow trails the core by 8 path units
-          via animation-delay so a clean streak forms behind the head.
-          The whole group is keyed on `direction` + `directionFlashKey` so a
-          King reversal cleanly remounts and restarts the animation in the
-          new direction (no mid-cycle jump). */}
+      {/* Direction-of-play track: a warm inlaid rail. It sits inside the seats
+          so it feels carved into the table rather than drawn over the game. */}
       <svg
         key={`flow-comet-${direction}-${directionFlashKey ?? 0}`}
         viewBox="0 0 100 100" preserveAspectRatio="none"
         className="absolute inset-0 w-full h-full pointer-events-none overflow-visible"
       >
         <defs>
-          <filter id="flow-comet-glow" x="-40%" y="-40%" width="180%" height="180%">
-            {/* Stronger Gaussian blur + a chromatic split via a colour-
-                matrix-tinted second blur, layered, so the trail reads as
-                a real glowing comet rather than a dashed line. */}
-            <feGaussianBlur stdDeviation="2.2" />
-          </filter>
-          <filter id="flow-comet-core" x="-30%" y="-30%" width="160%" height="160%">
-            <feGaussianBlur stdDeviation="0.6" />
-          </filter>
+          <linearGradient id="direction-inlay" x1="0" x2="1" y1="0" y2="1">
+            <stop offset="0%" stopColor="rgba(255,224,178,0.32)" />
+            <stop offset="48%" stopColor="rgba(180,105,48,0.26)" />
+            <stop offset="100%" stopColor="rgba(44,24,12,0.30)" />
+          </linearGradient>
+          <linearGradient id="direction-marker" x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0%" stopColor="rgba(251,191,36,0)" />
+            <stop offset="48%" stopColor="rgba(253,230,138,0.70)" />
+            <stop offset="100%" stopColor="rgba(255,251,235,0.88)" />
+          </linearGradient>
         </defs>
-        {/* Faint full-perimeter track. */}
+        {/* Soft recessed groove. */}
         <ellipse
-          cx="50" cy="50" rx={rx * 100} ry={ry * 100}
-          fill="none" stroke="rgba(255,255,255,0.10)" strokeWidth="1.2"
+          cx="50" cy="50" rx={railRx * 100} ry={railRy * 100}
+          fill="none" stroke="rgba(30,16,8,0.28)" strokeWidth="4.6"
           vectorEffect="non-scaling-stroke"
         />
-        {/* Glow trail — broader, blurred, lags behind the core. */}
+        {/* Warm table inlay. */}
         <ellipse
-          cx="50" cy="50" rx={rx * 100} ry={ry * 100}
-          pathLength={100}
-          fill="none"
-          stroke="rgba(167,243,208,0.55)" strokeWidth="7"
-          strokeDasharray="32 68" strokeLinecap="round"
+          cx="50" cy="50" rx={railRx * 100} ry={railRy * 100}
+          fill="none" stroke="url(#direction-inlay)" strokeWidth="2"
           vectorEffect="non-scaling-stroke"
-          filter="url(#flow-comet-glow)"
-          style={{
-            animation: `flow-comet-${direction === 1 ? 'cw' : 'ccw'} 3.2s linear infinite`,
-            animationDelay: '-0.18s',     // ~5.6% of period — lags slightly behind the core
-          }}
         />
-        {/* Bright core head. */}
+        {/* Inner highlight keeps the rail crisp without adding visual noise. */}
         <ellipse
-          cx="50" cy="50" rx={rx * 100} ry={ry * 100}
-          pathLength={100}
-          fill="none"
-          stroke="rgb(220,252,231)" strokeWidth="2.2"
-          strokeDasharray="10 90" strokeLinecap="round"
+          cx="50" cy="50" rx={railRx * 100} ry={railRy * 100}
+          fill="none" stroke="rgba(255,246,220,0.14)" strokeWidth="0.75"
           vectorEffect="non-scaling-stroke"
-          filter="url(#flow-comet-core)"
-          style={{
-            animation: `flow-comet-${direction === 1 ? 'cw' : 'ccw'} 3.2s linear infinite`,
-            filter: 'drop-shadow(0 0 6px rgba(220,252,231,1)) drop-shadow(0 0 14px rgba(16,185,129,0.6))',
-          }}
         />
-        {/* Sparkle tip — short, brighter dash at the leading edge of the
-            core, slightly ahead of it, so the comet has a discernible head
-            instead of a uniform dash. */}
+        {/* Moving direction marker. */}
         <ellipse
-          cx="50" cy="50" rx={rx * 100} ry={ry * 100}
+          cx="50" cy="50" rx={railRx * 100} ry={railRy * 100}
           pathLength={100}
           fill="none"
-          stroke="white" strokeWidth="1.4"
-          strokeDasharray="2 98" strokeLinecap="round"
+          stroke="url(#direction-marker)" strokeWidth="3.2"
+          strokeDasharray="6.5 93.5" strokeLinecap="round"
           vectorEffect="non-scaling-stroke"
           style={{
-            animation: `flow-comet-${direction === 1 ? 'cw' : 'ccw'} 3.2s linear infinite`,
-            animationDelay: '0.12s',
-            filter: 'drop-shadow(0 0 4px white) drop-shadow(0 0 10px rgba(255,255,255,0.7))',
+            animation: `flow-comet-${direction === 1 ? 'cw' : 'ccw'} 5.2s linear infinite`,
+            filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.42))',
           }}
         />
       </svg>
@@ -1027,7 +997,7 @@ function CircularTable({ players, current, viewer, direction, directionFlashKey,
       })}
 
       <div
-        className="absolute left-1/2 -translate-x-1/2 -translate-y-1/2"
+        className="center-pile-well absolute left-1/2 -translate-x-1/2 -translate-y-1/2"
         style={{ top: `${50 + yOffset}%` }}
       >
         {centerContent}
@@ -1503,12 +1473,12 @@ function GameLogOverlay({ log, open, onClose }: { log: string[]; open: boolean; 
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             transition={{ duration: 0.18 }}
             onClick={onClose}
-            className="fixed inset-0 z-30 bg-black/40 lg:hidden"
+            className="fixed inset-0 z-30 bg-black/40"
           />
           <motion.div
             initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }}
             transition={{ type: 'spring', stiffness: 280, damping: 30 }}
-            className="fixed inset-y-0 right-0 z-40 w-80 max-w-[85vw] bg-stone-50 shadow-2xl overflow-y-auto lg:hidden"
+            className="fixed inset-y-0 right-0 z-40 w-80 max-w-[85vw] bg-stone-50 shadow-2xl overflow-y-auto"
           >
             <div className="px-3 py-2 flex items-center justify-between border-b border-gray-200 sticky top-0 bg-stone-50">
               <span className="font-semibold">📜 Game log</span>
@@ -1769,7 +1739,7 @@ function IntroSequence({
   aiDifficulty,
   onComplete,
 }: {
-  players: { name: string; isAi?: boolean }[];
+  players: Player[];
   avatars: (string | null)[];
   mode: 'classic' | 'ultimate';
   aiDifficulty?: AiDifficulty;
@@ -1777,6 +1747,16 @@ function IntroSequence({
 }) {
   const reduced = useReducedMotion();
   const n = players.length;
+  const isHiddenIntroCard = (card: Card | undefined) =>
+    !card || /^(hh|fd|dk|pr)-/.test(card.id);
+  const introCardFor = (player: Player, row: number, col: number): Card | null => {
+    if (row === 1) return player.faceUp[col] ?? null;
+    if (row === 2) {
+      const card = player.hand[col];
+      return isHiddenIntroCard(card) ? null : card;
+    }
+    return null;
+  };
 
   // Elliptical seating — viewer at the bottom (angle = π/2). Slightly squashed
   // vertically so it reads like a poker table rather than a circle. The
@@ -1794,10 +1774,10 @@ function IntroSequence({
     window.addEventListener('resize', update);
     return () => window.removeEventListener('resize', update);
   }, []);
-  // Stage targets up to 680×480 on desktop, but shrinks proportionally so
+  // Stage targets up to 760×540 on desktop, but shrinks proportionally so
   // 2*RX + chip width fits the viewport with margin to spare.
-  const stageW = Math.min(680, vw - 32);
-  const stageH = Math.min(480, vh * 0.62);
+  const stageW = Math.min(760, vw - 32);
+  const stageH = Math.min(540, vh * 0.70);
   const RX = Math.max(110, stageW / 2 - 80);    // 80px margin per side reserves room for chips
   const RY = Math.max(70,  stageH / 2 - 70);
   const positions = useMemo(() => {
@@ -1821,16 +1801,14 @@ function IntroSequence({
   const REEL_PER_CHIP_MS = reduced ? 0 : 140;
   const REEL_DUR_MS = reduced ? 0 : Math.max(600, n * REEL_PER_CHIP_MS + 200);
   const SHUFFLE_MS = reduced ? 0 : 700;
-  // Burst-style deal: each player receives all 3 cards (face-down + face-up +
-  // hand) at once in a single visual burst, then we move on to the next
-  // player. Reads as "3, 3, 3" rather than the previous round-by-round
-  // "1, 1, 1" pattern. Tiny within-burst stagger (BURST_FAN_MS) makes the
-  // three cards fan out so they don't render as a single card sprite.
-  const BURST_GAP_MS = reduced ? 0 : 320;   // delay between players' bursts
-  const BURST_FAN_MS = reduced ? 0 : 60;    // intra-burst stagger between rows
-  const BURST_TRAVEL_MS = reduced ? 0 : 460; // travel time per card
+  // Table-deal timing: 9 visible cards per player: 3 face-down, 3 face-up,
+  // 3 to hand. We deal by row and column around the table, so every seat
+  // visibly receives the same setup the reducer actually dealt.
+  const DEAL_CARD_GAP_MS = reduced ? 0 : 54;
+  const DEAL_TRAVEL_MS = reduced ? 0 : 430;
   const dealStart = ESTABLISH_MS + REEL_DUR_MS + SHUFFLE_MS;
-  const dealEnd = dealStart + (n - 1) * BURST_GAP_MS + 2 * BURST_FAN_MS + BURST_TRAVEL_MS;
+  const totalDealCards = n * 9;
+  const dealEnd = dealStart + Math.max(0, totalDealCards - 1) * DEAL_CARD_GAP_MS + DEAL_TRAVEL_MS;
   // dealEnd is the moment the last card lands. The +120ms buffer covers
   // the card's settle frame and lets the parent's exit fade overlap with
   // the table appearing — was 500ms, which felt like the overlay was
@@ -1839,6 +1817,7 @@ function IntroSequence({
 
   // Skip-on-interaction. Any tap, click, or key press fast-forwards.
   const [skipped, setSkipped] = useState(false);
+  const [skipArmed, setSkipArmed] = useState(false);
   useEffect(() => {
     if (skipped) {
       const t = setTimeout(onComplete, 180); // brief fade so it doesn't snap
@@ -1850,29 +1829,32 @@ function IntroSequence({
 
   useEffect(() => {
     const handler = () => setSkipped(true);
-    window.addEventListener('keydown', handler, { once: true });
-    window.addEventListener('pointerdown', handler, { once: true });
+    // Defer skip binding so the click/tap that started the game does not
+    // bubble into the freshly mounted intro and immediately dismiss it.
+    const arm = window.setTimeout(() => {
+      setSkipArmed(true);
+      window.addEventListener('keydown', handler, { once: true });
+      window.addEventListener('pointerdown', handler, { once: true });
+    }, 700);
     return () => {
+      window.clearTimeout(arm);
       window.removeEventListener('keydown', handler);
       window.removeEventListener('pointerdown', handler);
     };
   }, []);
 
-  // Audio choreography. Per-burst whoosh + a triple click cluster as the 3
-  // cards land at each seat. Wrapped in timers so a skip clears them.
+  // Audio choreography. Light click on each dealt card, with a soft shuffle
+  // cue before the first card leaves the deck. Wrapped in timers so a skip clears them.
   useEffect(() => {
     if (reduced) return;
     const timers: number[] = [];
-    for (let i = 0; i < n; i++) {
-      const burstT = dealStart + i * BURST_GAP_MS;
-      timers.push(window.setTimeout(() => sfx.play('emote'), burstT - 60));
-      for (let r = 0; r < 3; r++) {
-        const t = burstT + r * BURST_FAN_MS + Math.floor(BURST_TRAVEL_MS * 0.7);
-        timers.push(window.setTimeout(() => sfx.play('click'), t));
-      }
+    timers.push(window.setTimeout(() => sfx.play('emote'), Math.max(0, dealStart - 80)));
+    for (let cardIdx = 0; cardIdx < totalDealCards; cardIdx++) {
+      const t = dealStart + cardIdx * DEAL_CARD_GAP_MS + Math.floor(DEAL_TRAVEL_MS * 0.74);
+      timers.push(window.setTimeout(() => sfx.play('click'), t));
     }
     return () => timers.forEach(clearTimeout);
-  }, [reduced, dealStart, n, BURST_GAP_MS, BURST_FAN_MS, BURST_TRAVEL_MS]);
+  }, [reduced, dealStart, totalDealCards, DEAL_CARD_GAP_MS, DEAL_TRAVEL_MS]);
 
   // Reduced-motion path: tiny crossfade with chips + caption only.
   if (reduced) {
@@ -1892,8 +1874,14 @@ function IntroSequence({
       initial={{ opacity: 0 }} animate={{ opacity: skipped ? 0 : 1 }} exit={{ opacity: 0 }}
       transition={{ duration: 0.25 }}
       className="fixed inset-0 z-40 flex items-center justify-center cursor-pointer"
-      style={{ background: 'radial-gradient(ellipse at center, rgba(8,20,14,0.55) 0%, rgba(0,0,0,0.85) 100%)', backdropFilter: 'blur(6px)' }}
-      onClick={() => setSkipped(true)}
+      style={{
+        background: [
+          'radial-gradient(ellipse 90% 70% at 50% 48%, rgba(39,91,67,0.58), rgba(8,20,14,0.82) 68%, rgba(0,0,0,0.90))',
+          'linear-gradient(180deg, rgba(255,255,255,0.04), rgba(0,0,0,0.22))',
+        ].join(', '),
+        backdropFilter: 'blur(5px)',
+      }}
+      onClick={() => { if (skipArmed) setSkipped(true); }}
     >
       {/* Wordmark + mode chip — establishing shot. Stays visible all the way
           through establish + reel + shuffle, only beginning to fade once the
@@ -1915,12 +1903,9 @@ function IntroSequence({
           initial={{ opacity: 0, y: -12 }}
           animate={{ opacity: [0, 1, 1, 0], y: [-12, 0, 0, -6] }}
           transition={{ duration: wordmarkVisibleMs / 1000, times: [0, inAt, outAt, 1] }}
-          className="absolute top-[22%] sm:top-[30%] md:top-[34%] inset-x-0 flex flex-col items-center gap-2.5 z-10 pointer-events-none"
-          // Match the same mobile left-nudge applied to the stage so the
-          // wordmark stays visually aligned with the elliptical layout.
-          style={{ marginLeft: vw < 640 ? -20 : 0 }}
+          className="absolute top-5 sm:top-6 inset-x-0 flex flex-col items-center gap-2 z-10 pointer-events-none"
         >
-          <div className="text-white text-3xl sm:text-5xl md:text-6xl font-black tracking-[0.22em] drop-shadow-[0_4px_24px_rgba(16,185,129,0.45)] text-center">
+          <div className="text-white/90 text-xl sm:text-3xl font-black tracking-[0.22em] drop-shadow-[0_4px_20px_rgba(0,0,0,0.55)] text-center">
             LATRINE
           </div>
         <div className="flex items-center gap-2 text-[11px] uppercase tracking-widest">
@@ -1943,31 +1928,12 @@ function IntroSequence({
       {/* Stage — all elliptical layout coordinates are relative to the centre of this box.
           Width/height are derived from the viewport so chips/cards never escape it. */}
       <div
-        className="relative"
+        className="table-stage relative"
         style={{
           width: stageW,
           height: stageH,
-          // Nudge left on mobile so the elliptical layout sits visually
-          // centered against the felt — without this it leans right
-          // because of various viewport asymmetries (right-edge gutter,
-          // safe-area insets on notched devices, etc.).
-          marginLeft: vw < 640 ? -20 : 0,
         }}
       >
-        {/* Soft elliptical guide ring — sketches where seats will land. */}
-        <motion.div
-          initial={{ opacity: 0, scale: 0.96 }}
-          animate={{ opacity: skipped ? 0 : 0.18, scale: 1 }}
-          transition={{ duration: 0.6, delay: ESTABLISH_MS / 1000 }}
-          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full"
-          style={{
-            width: RX * 2 + 80,
-            height: RY * 2 + 60,
-            border: '1px solid rgba(255,255,255,0.35)',
-            boxShadow: 'inset 0 0 60px rgba(16,185,129,0.18)',
-          }}
-        />
-
         {/* Player chips — pop in around the table in order */}
         {positions.map((pos, i) => {
           const def = avatarDef(pos.avatar);
@@ -1990,7 +1956,7 @@ function IntroSequence({
               >
                 <span aria-hidden>{def?.emoji ?? (pos.isAi ? '🤖' : '👤')}</span>
               </div>
-              <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold text-white bg-slate-900/80 ring-1 ring-white/10 max-w-[110px] truncate">
+              <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold text-white bg-slate-950/70 ring-1 ring-white/10 max-w-[110px] truncate shadow-[0_4px_12px_rgba(0,0,0,0.28)]">
                 {pos.name}
                 {pos.isAi && <span className="ml-1 text-white/55">· AI</span>}
               </span>
@@ -1998,7 +1964,7 @@ function IntroSequence({
           );
         })}
 
-        {/* Shuffling deck — six stacked card-backs that wobble during the shuffle window. */}
+        {/* Dealer deck — six stacked card-backs that shuffle in the centre. */}
         <motion.div
           className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
           initial={{ opacity: 0, scale: 0.9 }}
@@ -2026,44 +1992,61 @@ function IntroSequence({
           ))}
         </motion.div>
 
-        {/* The deal — burst-style. Each player receives a 3-card burst at
-            once (face-down + face-up + hand), then we move to the next
-            seat. Within a burst the rows are staggered by BURST_FAN_MS so
-            they fan out instead of rendering as one stacked sprite. */}
+        <motion.div
+          initial={{ opacity: 0, y: 4 }}
+          animate={{ opacity: [0, 1, 1, 0], y: [4, 0, 0, -3] }}
+          transition={{
+            delay: (dealStart - 120) / 1000,
+            duration: (dealEnd - dealStart + 420) / 1000,
+            times: [0, 0.12, 0.82, 1],
+          }}
+          className="absolute left-1/2 top-1/2 mt-16 -translate-x-1/2 px-3 py-1 rounded-full bg-slate-950/70 ring-1 ring-white/10 text-white/80 text-[11px] font-semibold tracking-[0.16em] uppercase shadow-[0_6px_18px_rgba(0,0,0,0.30)]"
+        >
+          dealing around the table
+        </motion.div>
+
+        {/* The deal — 9 cards per player, arranged as 3 rows of 3. */}
         {positions.flatMap((pos, i) => {
-          const burstDelay = dealStart + i * BURST_GAP_MS;
-          // Tangent direction at this seat (perpendicular to the radial
-          // vector) — kept for future side-by-side spreading; rows currently
-          // separate via radial offset below.
-          // Row offset — face-down (row 0) sits closest to centre, hand
-          // (row 2) sits farthest. radial offsets in {-18, 0, +18}.
+          const player = players[i];
           const rot = (pos.angle * 180) / Math.PI + 90;
-          return [0, 1, 2].map(row => {
-            const cardDelay = burstDelay + row * BURST_FAN_MS;
+          const tangentX = -Math.sin(pos.angle);
+          const tangentY = Math.cos(pos.angle);
+          return Array.from({ length: 9 }).map((_, cardNo) => {
+            const row = Math.floor(cardNo / 3);      // 0 face-down, 1 face-up, 2 hand
+            const col = cardNo % 3;
+            const cardIdx = cardNo * n + i;
+            const cardDelay = dealStart + cardIdx * DEAL_CARD_GAP_MS;
+            const visibleCard = introCardFor(player, row, col);
+            // Tangent spreads each row into three card slots. Radial offset
+            // creates the face-down / face-up / hand lanes toward each player.
+            const tangent = (col - 1) * 14;
             const radial = (row - 1) * 18;
-            const rx = Math.cos(pos.angle) * radial;
-            const ry = Math.sin(pos.angle) * radial * 0.6;
-            const finalX = pos.x + rx;
-            const finalY = pos.y + ry;
+            const finalX = pos.x + tangentX * tangent + Math.cos(pos.angle) * radial;
+            const finalY = pos.y + tangentY * tangent + Math.sin(pos.angle) * radial * 0.72;
+            const midX = finalX * 0.46 + tangentX * (col - 1) * 8;
+            const midY = finalY * 0.46 - 34 + row * 5;
             return (
               <motion.div
-                key={`deal-${i}-${row}`}
-                initial={{ x: 0, y: 0, opacity: 0, scale: 1, rotate: 0 }}
+                key={`deal-${i}-${cardNo}`}
+                initial={{ x: 0, y: 0, opacity: 0, scale: 0.92, rotate: 0 }}
                 animate={{
-                  x: finalX, y: finalY,
-                  opacity: [0, 1, 1, 0.92],
-                  scale: 0.55,
-                  rotate: rot,
+                  x: [0, midX, finalX],
+                  y: [0, midY, finalY],
+                  opacity: [0, 1, 1, 0.94],
+                  scale: [0.92, 0.70, 0.43],
+                  rotate: [0, rot + (col - 1) * 7, rot + (col - 1) * 4],
                 }}
                 transition={{
                   delay: cardDelay / 1000,
-                  duration: BURST_TRAVEL_MS / 1000,
-                  ease: [0.32, 0.72, 0.35, 1.0], // emphasized cubic — card snapping to table
-                  opacity: { duration: BURST_TRAVEL_MS / 1000, times: [0, 0.18, 0.85, 1] },
+                  duration: DEAL_TRAVEL_MS / 1000,
+                  ease: [0.22, 0.82, 0.28, 1.0],
+                  opacity: { duration: DEAL_TRAVEL_MS / 1000, times: [0, 0.12, 0.82, 1] },
                 }}
                 className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
               >
-                <CardFace hidden />
+                {visibleCard
+                  ? <CardFace card={visibleCard} />
+                  : <CardFace hidden />}
               </motion.div>
             );
           });
@@ -2075,10 +2058,10 @@ function IntroSequence({
           animate={{ opacity: [0, 1, 1, 0], y: [8, 0, 0, -4] }}
           transition={{
             delay: dealStart / 1000,
-            duration: ((n - 1) * BURST_GAP_MS + BURST_TRAVEL_MS) / 1000,
+            duration: (dealEnd - dealStart) / 1000,
             times: [0, 0.12, 0.85, 1],
           }}
-          className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-slate-900/85 ring-1 ring-white/10 text-white/90 text-xs font-semibold tracking-wide"
+          className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-slate-950/75 ring-1 ring-white/10 text-white/90 text-xs font-semibold tracking-wide"
         >
           Dealing…
         </motion.div>
@@ -4574,7 +4557,15 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
             : <>Spectating — click any player to follow</>}
         </div>
       )}
-      <div className="flex flex-col lg:flex-row min-h-full lg:h-screen lg:overflow-hidden">
+      <div className="relative min-h-screen overflow-hidden">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0"
+          style={{
+            background:
+              'radial-gradient(ellipse 85% 68% at 50% 43%, rgba(255,255,255,0.10), transparent 62%), radial-gradient(ellipse 120% 90% at 50% 58%, rgba(5,20,14,0.10), rgba(0,0,0,0.34) 100%)',
+          }}
+        />
         <AnimatePresence>
           {beatToIt && (
             <motion.div
@@ -4590,7 +4581,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
             </motion.div>
           )}
         </AnimatePresence>
-        <div className="flex-1 p-3 sm:p-4 pt-14 flex flex-col gap-3 sm:gap-4 lg:gap-5 min-w-0 lg:min-h-0">
+        <div className="relative z-10 min-h-screen p-3 sm:p-4 pt-14 flex flex-col gap-3 sm:gap-4 lg:gap-5 min-w-0">
           <StatusBar state={state} viewerId={viewerId} isMyTurn={isMyTurn} spectatorCount={spectatorCount} connectedSeats={connectedSeats} />
           {/* Player tiles + center piles. Linear stack on small screens (turn-ordered);
               circular table layout on lg+ so the viewer can see who's next at a glance. */}
@@ -4641,7 +4632,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
             );
           })()}
 
-          <div className="border-t border-white/15 pt-3 mx-auto w-full max-w-3xl">
+          <div className="hand-dock pt-3 px-3 sm:px-4 -mx-3 sm:mx-auto w-[calc(100%+1.5rem)] sm:w-full max-w-4xl">
             <div className="flex items-center justify-between mb-2 gap-3">
               {/* Status line — small caps label so it reads as a section
                   heading rather than competing with the buttons on the right. */}
@@ -4674,7 +4665,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
                 </button>
                 <button
                   onClick={() => setLogOpen(o => !o)}
-                  className="lg:hidden px-3 h-8 inline-flex items-center justify-center gap-1.5 text-[12px] font-semibold text-white/85 border-r border-white/10 hover:bg-white/5 transition-colors"
+                  className="px-3 h-8 inline-flex items-center justify-center gap-1.5 text-[12px] font-semibold text-white/85 border-r border-white/10 hover:bg-white/5 transition-colors"
                   aria-label="Open game log"
                 >
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -4728,7 +4719,7 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
                     <CardFace hidden onClick={() => dispatch({ type: 'FLIP_FACEDOWN', id: c.id })} />
                   </motion.div>
                 ))}
-                <span className="text-xs text-gray-600 italic">Tap one to flip blind.</span>
+                <span className="text-xs text-white/60 italic">Tap one to flip blind.</span>
               </div>
             )}
             {src && src !== 'faceDown' && (() => {
@@ -4927,7 +4918,6 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
             />
           )}
         </div>
-        <GameLog log={state.log} sidebar />
         <GameLogOverlay log={state.log} open={logOpen} onClose={() => setLogOpen(false)} />
       </div>
     </LayoutGroup>
@@ -6492,7 +6482,7 @@ function LocalGame({ humans, ais, aiSpeed, aiDifficulty, onExit, auth }: { human
       <AnimatePresence>
         {dealing && (
           <IntroSequence
-            players={state.players.map(p => ({ name: p.name, isAi: p.isAi }))}
+            players={state.players}
             avatars={localAvatars}
             mode={state.mode}
             aiDifficulty={aiDifficulty}
@@ -6653,7 +6643,7 @@ function NetworkGame({ onExit, prefilledCode, auth }: { onExit: () => void; pref
       <AnimatePresence>
         {dealing && conn.state && (
           <IntroSequence
-            players={conn.state.players.map(p => ({ name: p.name, isAi: p.isAi }))}
+            players={conn.state.players}
             avatars={netAvatars}
             mode={conn.state.mode}
             aiDifficulty={conn.state.aiDifficulty}
