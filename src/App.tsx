@@ -4333,6 +4333,14 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
     (state.deck.length === 0 && selectedHand.length === (me?.hand.length ?? 0));
   const canPlay = isMyTurn && selectedAll.length > 0 && chainOk && canPlayCards(selectedAll, state.pile, state.sevenRestriction);
   const anyLegal = sourceCards.some(c => canPlayCards([c], state.pile, state.sevenRestriction));
+  // Pickup gate: blocked only when EVERY card in the active source is a
+  // legal play (i.e. there's no card the player could plausibly reveal as
+  // an "I couldn't play this" justification). As long as the player holds
+  // at least one card they couldn't have played, pickup is allowed even
+  // if they also have some legal options.
+  const allCardsLegal = sourceCards.length > 0 && !sourceCards.some(
+    c => !canPlayCards([c], state.pile, state.sevenRestriction),
+  );
   // Face-up gamble: when the active source is face-up and the player has
   // committed exactly one face-up card that turns out to be illegal, the
   // reducer's house rule forces a pickup of the pile + that card. The
@@ -4359,16 +4367,16 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
       } else if (e.key === 'Enter' && canPlay) {
         dispatch({ type: 'PLAY_SELECTED' });
         e.preventDefault();
-      } else if ((e.key === 'p' || e.key === 'P') && state.pile.length > 0 && src !== 'faceDown' && !anyLegal) {
-        // Pickup is gated to "no legal play exists" everywhere — the
-        // hotkey shouldn't be a sneaky bypass around the button gate.
+      } else if ((e.key === 'p' || e.key === 'P') && state.pile.length > 0 && src !== 'faceDown' && !allCardsLegal) {
+        // Pickup is allowed unless every card in the active source is
+        // legal — same gate as the button so the hotkey isn't a bypass.
         dispatch({ type: 'PICKUP_PILE' });
         e.preventDefault();
       }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [isMyTurn, canPlay, displayCards, src, state.pile.length, anyLegal, dispatch]);
+  }, [isMyTurn, canPlay, displayCards, src, state.pile.length, allCardsLegal, dispatch]);
 
   return (
     <LayoutGroup>
@@ -4671,24 +4679,28 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
                     : <><span aria-hidden>▶</span> Play</>}
                 </button>
                 {(() => {
-                  // House rule: you can only pick up the pile when you have
-                  // no legal play in your active source. With at least one
-                  // legal card the Pick-up button is disabled — players
-                  // can't strategically dump good cards into their hand to
-                  // queue up a four-of-a-kind. (Face-down phase isn't a
-                  // concern here — the parent guards src !== 'faceDown'.)
+                  // House rule: pickup is blocked only when EVERY card in
+                  // the active source is a legal play — at that point the
+                  // player must play one, because there's no "I couldn't
+                  // play this" reveal candidate. As long as they hold at
+                  // least one illegal-on-pile card, pickup remains an
+                  // option (even if they also have legal plays).
+                  // Pickup also stays open as a strong-affordance "you
+                  // have no legal moves" button when !anyLegal.
                   const pickupAllowed =
-                    isMyTurn && state.pile.length > 0 && !anyLegal;
-                  const lockedByLegal =
-                    isMyTurn && state.pile.length > 0 && anyLegal;
+                    isMyTurn && state.pile.length > 0 && !allCardsLegal;
+                  const lockedAllLegal =
+                    isMyTurn && state.pile.length > 0 && allCardsLegal;
                   return (
                     <button
                       disabled={!pickupAllowed}
                       onClick={() => pickupAllowed && dispatch({ type: 'PICKUP_PILE' })}
-                      title={lockedByLegal ? 'You have a legal play — Pickup is locked.' : undefined}
+                      title={lockedAllLegal ? 'Every card is a legal play — Pickup is locked.' : undefined}
                       className={`px-4 sm:px-5 h-9 sm:h-10 rounded-full text-sm font-semibold flex items-center gap-1.5 transition-all ${
                         pickupAllowed
-                          ? 'bg-rose-500 hover:bg-rose-400 active:scale-95 text-white shadow-[0_4px_12px_rgba(244,63,94,0.45)] ring-2 ring-rose-300/60'
+                          ? (!anyLegal
+                              ? 'bg-rose-500 hover:bg-rose-400 active:scale-95 text-white shadow-[0_4px_12px_rgba(244,63,94,0.45)] ring-2 ring-rose-300/60'
+                              : 'bg-white/10 hover:bg-white/20 active:scale-95 text-white')
                           : 'text-white/35 cursor-not-allowed'
                       }`}
                     >
