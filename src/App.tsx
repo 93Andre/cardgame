@@ -1873,7 +1873,7 @@ function IntroSequence({
     <motion.div
       initial={{ opacity: 0 }} animate={{ opacity: skipped ? 0 : 1 }} exit={{ opacity: 0 }}
       transition={{ duration: 0.25 }}
-      className="fixed inset-0 z-40 flex items-center justify-center cursor-pointer"
+      className="fixed inset-0 z-40 cursor-pointer overflow-hidden"
       style={{
         background: [
           'radial-gradient(ellipse 90% 70% at 50% 48%, rgba(39,91,67,0.58), rgba(8,20,14,0.82) 68%, rgba(0,0,0,0.90))',
@@ -1930,8 +1930,13 @@ function IntroSequence({
       <div
         className="table-stage relative"
         style={{
+          position: 'absolute',
+          left: '50%',
+          top: '50%',
           width: stageW,
           height: stageH,
+          transform: 'translate(-50%, -50%)',
+          transformOrigin: 'center center',
         }}
       >
         {/* Player chips — pop in around the table in order */}
