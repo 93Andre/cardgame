@@ -5228,7 +5228,7 @@ function RevealChoiceScreen({ state, dispatch, viewerId }: {
               {Math.ceil(remaining / 1000)}s
             </span>
           </div>
-          <span className="text-[11px] text-emerald-200/70">
+          <span className="text-[11px] text-white/85 drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)]">
             Playable cards are dimmed — you have to prove you had no legal move.
           </span>
         </div>
