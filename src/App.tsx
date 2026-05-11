@@ -4359,14 +4359,16 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
       } else if (e.key === 'Enter' && canPlay) {
         dispatch({ type: 'PLAY_SELECTED' });
         e.preventDefault();
-      } else if ((e.key === 'p' || e.key === 'P') && state.pile.length > 0 && src !== 'faceDown') {
+      } else if ((e.key === 'p' || e.key === 'P') && state.pile.length > 0 && src !== 'faceDown' && !anyLegal) {
+        // Pickup is gated to "no legal play exists" everywhere — the
+        // hotkey shouldn't be a sneaky bypass around the button gate.
         dispatch({ type: 'PICKUP_PILE' });
         e.preventDefault();
       }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [isMyTurn, canPlay, displayCards, src, state.pile.length, dispatch]);
+  }, [isMyTurn, canPlay, displayCards, src, state.pile.length, anyLegal, dispatch]);
 
   return (
     <LayoutGroup>
@@ -4668,19 +4670,32 @@ function PlayScreen({ state, dispatch, viewerId, emotes, onEmote, chats, onChat,
                     ? <><span aria-hidden>⚠</span> Try (illegal → pick up)</>
                     : <><span aria-hidden>▶</span> Play</>}
                 </button>
-                <button
-                  disabled={!isMyTurn || state.pile.length === 0}
-                  onClick={() => dispatch({ type: 'PICKUP_PILE' })}
-                  className={`px-4 sm:px-5 h-9 sm:h-10 rounded-full text-sm font-semibold flex items-center gap-1.5 transition-all ${
-                    isMyTurn && state.pile.length > 0
-                      ? (!anyLegal && src
+                {(() => {
+                  // House rule: you can only pick up the pile when you have
+                  // no legal play in your active source. With at least one
+                  // legal card the Pick-up button is disabled — players
+                  // can't strategically dump good cards into their hand to
+                  // queue up a four-of-a-kind. (Face-down phase isn't a
+                  // concern here — the parent guards src !== 'faceDown'.)
+                  const pickupAllowed =
+                    isMyTurn && state.pile.length > 0 && !anyLegal;
+                  const lockedByLegal =
+                    isMyTurn && state.pile.length > 0 && anyLegal;
+                  return (
+                    <button
+                      disabled={!pickupAllowed}
+                      onClick={() => pickupAllowed && dispatch({ type: 'PICKUP_PILE' })}
+                      title={lockedByLegal ? 'You have a legal play — Pickup is locked.' : undefined}
+                      className={`px-4 sm:px-5 h-9 sm:h-10 rounded-full text-sm font-semibold flex items-center gap-1.5 transition-all ${
+                        pickupAllowed
                           ? 'bg-rose-500 hover:bg-rose-400 active:scale-95 text-white shadow-[0_4px_12px_rgba(244,63,94,0.45)] ring-2 ring-rose-300/60'
-                          : 'bg-white/10 hover:bg-white/20 active:scale-95 text-white')
-                      : 'text-white/35 cursor-not-allowed'
-                  }`}
-                >
-                  <span aria-hidden>⤴</span> Pick up
-                </button>
+                          : 'text-white/35 cursor-not-allowed'
+                      }`}
+                    >
+                      <span aria-hidden>⤴</span> Pick up
+                    </button>
+                  );
+                })()}
                 {canCut && (
                   <motion.button
                     initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
@@ -5092,6 +5107,17 @@ function RevealChoiceScreen({ state, dispatch, viewerId }: {
   state: GameState; dispatch: (a: Action) => void; viewerId: number | null;
 }) {
   const rawCards = state.pendingReveal?.cards ?? [];
+  // legalIds: cards the picker COULD have legally played onto the pile
+  // they just picked up. House rule says they must reveal a card they
+  // couldn't have played — so these are dimmed + unclickable. If every
+  // card was legal (edge case), the constraint is dropped so the user
+  // isn't stranded.
+  const legalIdSet = useMemo(
+    () => new Set(state.pendingReveal?.legalIds ?? []),
+    [state.pendingReveal?.legalIds]
+  );
+  const allWereLegal = rawCards.length > 0 && legalIdSet.size === rawCards.length;
+  const isCardEligible = (id: string) => allWereLegal || !legalIdSet.has(id);
   const picker = state.players[state.current];
   const isMyChoice = viewerId === null
     ? !picker?.isAi
@@ -5114,13 +5140,17 @@ function RevealChoiceScreen({ state, dispatch, viewerId }: {
   const elapsed = now - startedAtRef.current;
   const remaining = Math.max(0, REVEAL_TIMEOUT_MS - elapsed);
   const pct = Math.min(100, (elapsed / REVEAL_TIMEOUT_MS) * 100);
-  // Auto-pick a random card on expiry — only fires for local games where
+  // Auto-pick a card on expiry — only fires for local games where
   // viewerId === null (no server). Network games are handled server-side.
+  // Picks from eligible (illegal-on-prior-pile) cards first; falls back
+  // to any card if every hand card was legal.
   useEffect(() => {
     if (!isMyChoice || viewerId !== null) return;
     if (rawCards.length === 0) return;
     const t = setTimeout(() => {
-      const choice = rawCards[Math.floor(Math.random() * rawCards.length)];
+      const eligible = rawCards.filter(c => isCardEligible(c.id));
+      const pool = eligible.length > 0 ? eligible : rawCards;
+      const choice = pool[Math.floor(Math.random() * pool.length)];
       if (choice) dispatch({ type: 'REVEAL_CHOICE', id: choice.id });
     }, REVEAL_TIMEOUT_MS);
     return () => clearTimeout(t);
@@ -5175,35 +5205,55 @@ function RevealChoiceScreen({ state, dispatch, viewerId }: {
         )}
         {/* Drag handle — purely decorative cue that this is a sheet. */}
         <div className="w-10 h-1 rounded-full bg-emerald-300/40" aria-hidden />
-        <div className="flex items-center gap-2">
-          <span className="text-sm sm:text-base font-bold text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)]">
-            Pick a card to reveal
-          </span>
-          <span className={`text-xs font-semibold tabular-nums ${
-            remaining < 8000 ? 'text-rose-300' : 'text-white/70'
-          }`}>
-            {Math.ceil(remaining / 1000)}s
+        <div className="flex flex-col items-center gap-0.5">
+          <div className="flex items-center gap-2">
+            <span className="text-sm sm:text-base font-bold text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)]">
+              Reveal a card you couldn't play
+            </span>
+            <span className={`text-xs font-semibold tabular-nums ${
+              remaining < 8000 ? 'text-rose-300' : 'text-white/70'
+            }`}>
+              {Math.ceil(remaining / 1000)}s
+            </span>
+          </div>
+          <span className="text-[11px] text-emerald-200/70">
+            Playable cards are dimmed — you have to prove you had no legal move.
           </span>
         </div>
         <div className="flex flex-wrap gap-2 justify-center">
-          {cards.map((card, idx) => (
-            <motion.button
-              key={card.id}
-              type="button"
-              onClick={() => dispatch({ type: 'REVEAL_CHOICE', id: card.id })}
-              whileHover={{ scale: 1.12, y: -6 }}
-              whileTap={{ scale: 0.95 }}
-              initial={{ y: 18, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              transition={{ type: 'spring', stiffness: 300, damping: 22, delay: idx * 0.03 }}
-              className="bg-transparent border-0 p-0 cursor-pointer"
-              aria-label={`Reveal ${card.rank}${card.suit}`}
-            >
-              <div className="rounded-md ring-1 ring-emerald-300/35 hover:ring-2 hover:ring-emerald-300 hover:shadow-[0_8px_20px_rgba(16,185,129,0.35)] transition-shadow">
-                <CardFace card={card} />
-              </div>
-            </motion.button>
-          ))}
+          {cards.map((card, idx) => {
+            const eligible = isCardEligible(card.id);
+            return (
+              <motion.button
+                key={card.id}
+                type="button"
+                disabled={!eligible}
+                onClick={() => eligible && dispatch({ type: 'REVEAL_CHOICE', id: card.id })}
+                whileHover={eligible ? { scale: 1.12, y: -6 } : undefined}
+                whileTap={eligible ? { scale: 0.95 } : undefined}
+                initial={{ y: 18, opacity: 0 }}
+                animate={{ y: 0, opacity: eligible ? 1 : 0.4 }}
+                transition={{ type: 'spring', stiffness: 300, damping: 22, delay: idx * 0.03 }}
+                className={`bg-transparent border-0 p-0 ${eligible ? 'cursor-pointer' : 'cursor-not-allowed'}`}
+                aria-label={eligible ? `Reveal ${card.rank}${card.suit}` : `${card.rank}${card.suit} — would have been a legal play`}
+                title={eligible ? undefined : 'Would have been a legal play — pick a different card'}
+              >
+                <div className={`relative rounded-md transition-shadow ${
+                  eligible
+                    ? 'ring-1 ring-emerald-300/35 hover:ring-2 hover:ring-emerald-300 hover:shadow-[0_8px_20px_rgba(16,185,129,0.35)]'
+                    : 'ring-1 ring-white/10 saturate-50'
+                }`}>
+                  <CardFace card={card} />
+                  {!eligible && (
+                    <span
+                      aria-hidden
+                      className="absolute -top-1.5 -right-1.5 px-1 py-0.5 rounded-full text-[9px] font-bold tracking-wide bg-emerald-500/85 text-white ring-1 ring-white/20"
+                    >LEGAL</span>
+                  )}
+                </div>
+              </motion.button>
+            );
+          })}
         </div>
       </div>
     </motion.div>
