@@ -1030,6 +1030,13 @@ export function redactForViewer(state: GameState, viewer: number): GameState {
             cards: state.pendingReveal.cards.map((_, i) => HIDDEN_CARD(`pr-${i}`)),
             legalIds: [],
           });
+  // End-of-game reveal: when the game's over, the Poop Head's leftover
+  // face-down cards are revealed to everyone (winners, fellow losers,
+  // spectators alike). Drives the "this is what they were sitting on"
+  // flip animation on the end screen. Owner's face-down cards stay
+  // hidden as normal for any non-ended game — the player doesn't know
+  // their own face-downs in this game's design.
+  const revealLoserFaceDown = state.phase === 'end' && state.poopHead !== null;
   return {
     ...state,
     players: state.players.map(p => {
@@ -1037,7 +1044,9 @@ export function redactForViewer(state: GameState, viewer: number): GameState {
       return {
         ...p,
         hand: (isMe || isSpectator) ? p.hand : p.hand.map((_, i) => HIDDEN_CARD(`hh-${p.id}-${i}`)),
-        faceDown: p.faceDown.map((_, i) => HIDDEN_CARD(`fd-${p.id}-${i}`)),
+        faceDown: (revealLoserFaceDown && p.id === state.poopHead)
+          ? p.faceDown
+          : p.faceDown.map((_, i) => HIDDEN_CARD(`fd-${p.id}-${i}`)),
       };
     }),
     deck: state.deck.map((_, i) => HIDDEN_CARD(`dk-${i}`)),

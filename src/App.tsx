@@ -5672,8 +5672,142 @@ function FlipScreen({ state, dispatch, viewerId }: {
   );
 }
 
+// Plays at the start of the EndScreen — reveals the Poop Head's leftover
+// face-down cards one by one with a 3D Y-axis flip. Calls onDone when the
+// last flip + a brief hold is complete. The end screen's downstream
+// content (POOP HEAD stamp, standings, awards) waits on this so the
+// reveal owns the moment.
+function PoopHeadFaceDownReveal({ loserName, cards, onDone }: { loserName: string; cards: Card[]; onDone: () => void }) {
+  // Slower, more dramatic reveal: each card visibly flips from back to
+  // face over ~1s, with a 750ms stagger so the eye lands on each card's
+  // reveal in turn. With backface-visibility: hidden on both faces, the
+  // user sees the card-back rotate away to edge-on, then the face come
+  // around — a real card flip.
+  const FLIP_MS = 1000;
+  const STAGGER_MS = 750;
+  const ENTRY_DELAY_MS = 500;    // wait after overlay fade-in before first flip
+  const HOLD_AFTER_MS = 1300;
+  const totalMs = ENTRY_DELAY_MS + (cards.length - 1) * STAGGER_MS + FLIP_MS + HOLD_AFTER_MS;
+  useEffect(() => {
+    const t = setTimeout(onDone, totalMs);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.45 }}
+      className="fixed inset-0 z-30 flex flex-col items-center justify-center pointer-events-none"
+      style={{ background: 'radial-gradient(ellipse at 50% 40%, rgba(20,10,4,0.65), rgba(0,0,0,0.85))', backdropFilter: 'blur(6px)' }}
+      aria-hidden
+    >
+      <motion.div
+        initial={{ y: -10, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        transition={{ delay: 0.2, duration: 0.5 }}
+        className="text-white/95 text-center mb-6 sm:mb-10"
+      >
+        <div className="text-[10px] sm:text-xs uppercase tracking-[0.28em] text-rose-300/90 font-bold mb-1">Face-down reveal</div>
+        <div className="text-xl sm:text-3xl font-black drop-shadow-[0_4px_24px_rgba(244,63,94,0.45)]">
+          {loserName} was sitting on…
+        </div>
+      </motion.div>
+
+      <div className="flex gap-3 sm:gap-5" style={{ perspective: '1100px' }}>
+        {cards.map((c, i) => (
+          <motion.div
+            key={c.id}
+            initial={{ scale: 0.6, y: 30, opacity: 0 }}
+            animate={{ scale: 1, y: 0, opacity: 1 }}
+            transition={{ delay: i * 0.12, type: 'spring', stiffness: 220, damping: 22 }}
+          >
+            {/* The flipping element. transformStyle: preserve-3d keeps
+                the two faces (back + front) in 3D space so backface-
+                visibility-hidden works correctly. */}
+            <motion.div
+              initial={{ rotateY: 180 }}
+              animate={{ rotateY: 0 }}
+              transition={{
+                delay: (ENTRY_DELAY_MS + i * STAGGER_MS) / 1000,
+                duration: FLIP_MS / 1000,
+                ease: [0.4, 0.0, 0.2, 1],
+              }}
+              style={{
+                transformStyle: 'preserve-3d',
+                position: 'relative',
+                // Scale up by 1.55× for the reveal moment. CardFace at
+                // normal is 64×96 so this lands ~99×149 — readable
+                // without dominating the screen.
+                transform: 'scale(1.55)',
+                // Size matches CardFace's "normal" dimensions so absolute
+                // children stack correctly.
+                width: 64,
+                height: 96,
+              }}
+            >
+              {/* Front face: card value. Sits at rotateY 0° (faces
+                  viewer when parent is at 0°). Hidden when its own
+                  surface is back-facing the viewer. */}
+              <div
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  backfaceVisibility: 'hidden',
+                  WebkitBackfaceVisibility: 'hidden',
+                }}
+              >
+                <CardFace card={c} />
+              </div>
+              {/* Back face: the L card-back. Pre-rotated 180° so it
+                  faces the viewer while the parent is still at 180°
+                  (start of the flip). As the parent rotates to 0°,
+                  this back-face turns away and the front-face comes
+                  around. */}
+              <div
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  backfaceVisibility: 'hidden',
+                  WebkitBackfaceVisibility: 'hidden',
+                  transform: 'rotateY(180deg)',
+                }}
+              >
+                <CardFace hidden />
+              </div>
+            </motion.div>
+          </motion.div>
+        ))}
+      </div>
+
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 0.55 }}
+        transition={{ delay: 2.0, duration: 0.5 }}
+        className="absolute bottom-6 text-[10px] uppercase tracking-widest text-white/55"
+      >
+        revealing…
+      </motion.div>
+    </motion.div>
+  );
+}
+
 function EndScreen({ state, onPlayAgain, canPlayAgain = true, awaitingHost = false, onCloseRoom }: { state: GameState; onPlayAgain: () => void; canPlayAgain?: boolean; awaitingHost?: boolean; onCloseRoom?: () => void }) {
   const loser = state.players.find(p => p.id === state.poopHead);
+  // Reveal flow: if the loser has any leftover face-down cards, play the
+  // flip-reveal overlay first, then transition to the main end screen
+  // (stamp + standings + awards). If they have none (rare — they flipped
+  // them all before losing), skip straight to the main screen.
+  const loserFaceDown = loser?.faceDown ?? [];
+  const hasReveal = loserFaceDown.length > 0;
+  const [revealDone, setRevealDone] = useState(!hasReveal);
+  // If state changes (shouldn't, but defence) and reveal becomes
+  // available again, reset.
+  useEffect(() => {
+    if (!hasReveal) setRevealDone(true);
+  }, [hasReveal]);
   const order = state.players
     .filter(p => p.finishPos !== null)
     .sort((a, b) => (a.finishPos! - b.finishPos!));
@@ -5712,26 +5846,44 @@ function EndScreen({ state, onPlayAgain, canPlayAgain = true, awaitingHost = fal
         ))}
       </div>
 
+      {/* Loser face-down reveal overlay — flips Poop Head's leftover
+          face-down cards one by one in a zoomed 3D-flip animation. Plays
+          BEFORE the POOP HEAD stamp lands; once it completes, the rest
+          of the end screen content animates in normally. */}
+      <AnimatePresence>
+        {hasReveal && !revealDone && loser && (
+          <PoopHeadFaceDownReveal
+            key="poophead-reveal"
+            loserName={loser.name}
+            cards={loserFaceDown}
+            onDone={() => setRevealDone(true)}
+          />
+        )}
+      </AnimatePresence>
+
       <motion.h1
         initial={{ scale: 0, rotate: -10 }} animate={{ scale: 1, rotate: 0 }}
         transition={{ type: 'spring', stiffness: 200 }}
         className="text-3xl sm:text-5xl font-black text-center px-4 z-10"
       >💩 {loser?.name} is the Poop Head!</motion.h1>
 
-      {/* POOP HEAD rubber-stamp — slams down 600ms after the title with a
-          rotated bounce + rose ring, sized so it reads as a "stamp" rather
-          than a label. Decorative; aria-hidden. */}
-      <motion.div
-        initial={{ scale: 4, opacity: 0, rotate: -22 }}
-        animate={{ scale: 1, opacity: 1, rotate: -8 }}
-        transition={{ delay: 0.55, type: 'spring', stiffness: 280, damping: 14 }}
-        className="z-10"
-        aria-hidden
-      >
-        <div className="px-4 py-1.5 rounded-md border-[3px] border-rose-600 text-rose-700 font-black tracking-[0.18em] text-base sm:text-xl bg-white/10 shadow-[0_6px_24px_rgba(244,63,94,0.45)]">
-          💩 POOP HEAD
-        </div>
-      </motion.div>
+      {/* POOP HEAD rubber-stamp — slams down after the face-down reveal
+          completes (or immediately if there's no reveal to play). The
+          `revealDone` flag both unmounts the AnimatePresence wrapper and
+          unlocks the stamp animation here. */}
+      {revealDone && (
+        <motion.div
+          initial={{ scale: 4, opacity: 0, rotate: -22 }}
+          animate={{ scale: 1, opacity: 1, rotate: -8 }}
+          transition={{ delay: 0.15, type: 'spring', stiffness: 280, damping: 14 }}
+          className="z-10"
+          aria-hidden
+        >
+          <div className="px-4 py-1.5 rounded-md border-[3px] border-rose-600 text-rose-700 font-black tracking-[0.18em] text-base sm:text-xl bg-white/10 shadow-[0_6px_24px_rgba(244,63,94,0.45)]">
+            💩 POOP HEAD
+          </div>
+        </motion.div>
+      )}
 
       <ol className="bg-white/90 p-4 rounded-lg border border-gray-300 z-10 min-w-[260px] space-y-1.5">
         {order.map(p => (
